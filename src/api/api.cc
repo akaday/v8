@@ -7725,6 +7725,7 @@ MaybeLocal<String> v8::String::NewExternalTwoByte(
     return Utils::ToLocal(string);
   } else {
     // The resource isn't going to be used, free it immediately.
+    resource->Unaccount(v8_isolate);
     resource->Dispose();
     return Utils::ToLocal(i_isolate->factory()->empty_string());
   }
@@ -7742,6 +7743,7 @@ MaybeLocal<String> v8::String::NewExternalOneByte(
   API_RCS_SCOPE(i_isolate, String, NewExternalOneByte);
   if (resource->length() == 0) {
     // The resource isn't going to be used, free it immediately.
+    resource->Unaccount(v8_isolate);
     resource->Dispose();
     return Utils::ToLocal(i_isolate->factory()->empty_string());
   }
@@ -9069,6 +9071,24 @@ i::InitializedFlag GetInitializedFlag(
 }
 }  // namespace
 
+MaybeLocal<ArrayBuffer> v8::ArrayBuffer::MaybeNew(
+    Isolate* isolate, size_t byte_length,
+    BackingStoreInitializationMode initialization_mode) {
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  API_RCS_SCOPE(i_isolate, ArrayBuffer, MaybeNew);
+  ENTER_V8_NO_SCRIPT_NO_EXCEPTION(i_isolate);
+  i::MaybeHandle<i::JSArrayBuffer> result =
+      i_isolate->factory()->NewJSArrayBufferAndBackingStore(
+          byte_length, GetInitializedFlag(initialization_mode));
+
+  i::Handle<i::JSArrayBuffer> array_buffer;
+  if (!result.ToHandle(&array_buffer)) {
+    return MaybeLocal<ArrayBuffer>();
+  }
+
+  return Utils::ToLocal(array_buffer);
+}
+
 Local<ArrayBuffer> v8::ArrayBuffer::New(
     Isolate* v8_isolate, size_t byte_length,
     BackingStoreInitializationMode initialization_mode) {
@@ -9081,8 +9101,6 @@ Local<ArrayBuffer> v8::ArrayBuffer::New(
 
   i::Handle<i::JSArrayBuffer> array_buffer;
   if (!result.ToHandle(&array_buffer)) {
-    // TODO(jbroman): It may be useful in the future to provide a MaybeLocal
-    // version that throws an exception or otherwise does not crash.
     i::V8::FatalProcessOutOfMemory(i_isolate, "v8::ArrayBuffer::New");
   }
 
