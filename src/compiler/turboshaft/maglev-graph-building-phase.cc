@@ -430,6 +430,27 @@ class GeneratorAnalyzer {
     name = _maybe_frame_state.value();                                      \
   }
 
+constexpr bool TooManyArgumentsForCall(size_t arguments_count) {
+  constexpr int kCalleeCount = 1;
+  constexpr int kFrameStateCount = 1;
+  return (arguments_count + kCalleeCount + kFrameStateCount) >
+         std::numeric_limits<decltype(Operation::input_count)>::max();
+}
+
+#define BAILOUT_IF_TOO_MANY_ARGUMENTS_FOR_CALL(count) \
+  {                                                   \
+    if (TooManyArgumentsForCall(count)) {             \
+      *bailout_ = BailoutReason::kTooManyArguments;   \
+      return maglev::ProcessResult::kAbort;           \
+    }                                                 \
+  }
+
+#define GENERATE_AND_MAP_BUILTIN_CALL(node, builtin, frame_state, arguments, \
+                                      ...)                                   \
+  BAILOUT_IF_TOO_MANY_ARGUMENTS_FOR_CALL(arguments.size());                  \
+  SetMap(node, GenerateBuiltinCall(node, builtin, frame_state, arguments,    \
+                                   ##__VA_ARGS__));
+
 // Turboshaft's MachineOptimizationReducer will sometimes detect that the
 // condition for a DeoptimizeIf is always true, and replace it with an
 // unconditional Deoptimize. When this happens, the assembler doesn't emit
@@ -1175,7 +1196,7 @@ class GraphBuildingNodeProcessor {
       OpIndex first_phi_input;
       if (state.block()->predecessor_count() > 2 ||
           generator_analyzer_.HeaderIsBypassed(state.block())) {
-        // This loop has multiple forward edge in Maglev, so we should have
+        // This loop has multiple forward edges in Maglev, so we should have
         // created an intermediate block in Turboshaft, which will be the only
         // predecessor of the Turboshaft loop, and from which we'll find the
         // first input for this loop phi.
@@ -1214,7 +1235,8 @@ class GraphBuildingNodeProcessor {
     inputs.resize_and_init(__ current_block()->PredecessorCount());
     for (int i = 0; i < maglev_input_count; ++i) {
       if (predecessor_permutation_[i] != Block::kInvalidPredecessorIndex) {
-        inputs[predecessor_permutation_[i]] = Map(maglev_node->input(i));
+        inputs[predecessor_permutation_[i]] =
+            MapPhiInput(maglev_node->input(i), predecessor_permutation_[i]);
       }
     }
 
@@ -1274,9 +1296,8 @@ class GraphBuildingNodeProcessor {
     }
     arguments.push_back(context);
 
-    SetMap(node,
-           GenerateBuiltinCall(node, builtin, frame_state,
-                               base::VectorOf(arguments), node->num_args()));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, builtin, frame_state,
+                                  base::VectorOf(arguments), node->num_args());
 
     return maglev::ProcessResult::kContinue;
   }
@@ -1303,11 +1324,11 @@ class GraphBuildingNodeProcessor {
         arguments.push_back(__ HeapConstant(local_factory_->undefined_value()));
       }
       arguments.push_back(Map(node->context()));
-      SetMap(node, GenerateBuiltinCall(
-                       node, node->shared_function_info().builtin_id(),
-                       frame_state, base::VectorOf(arguments),
-                       std::max<int>(actual_parameter_count,
-                                     node->expected_parameter_count())));
+      GENERATE_AND_MAP_BUILTIN_CALL(
+          node, node->shared_function_info().builtin_id(), frame_state,
+          base::VectorOf(arguments),
+          std::max<int>(actual_parameter_count,
+                        node->expected_parameter_count()));
     } else {
       ThrowingScope throwing_scope(this, node);
       base::SmallVector<OpIndex, 16> arguments;
@@ -1336,6 +1357,7 @@ class GraphBuildingNodeProcessor {
 
       LazyDeoptOnThrow lazy_deopt_on_throw = ShouldLazyDeoptOnThrow(node);
 
+      BAILOUT_IF_TOO_MANY_ARGUMENTS_FOR_CALL(arguments.size());
       SetMap(node, __ Call(V<CallTarget>::Cast(callee), frame_state,
                            base::VectorOf(arguments),
                            TSCallDescriptor::Create(descriptor, CanThrow::kYes,
@@ -1399,9 +1421,8 @@ class GraphBuildingNodeProcessor {
     }
 
     int stack_arg_count = node->num_args() + /* implicit receiver */ 1;
-    V<Any> result = GenerateBuiltinCall(
-        node, builtin, frame_state, base::VectorOf(arguments), stack_arg_count);
-    SetMap(node, result);
+    GENERATE_AND_MAP_BUILTIN_CALL(node, builtin, frame_state,
+                                  base::VectorOf(arguments), stack_arg_count);
 
     return maglev::ProcessResult::kContinue;
   }
@@ -1410,6 +1431,7 @@ class GraphBuildingNodeProcessor {
       OptionalV<FrameState> frame_state, base::Vector<const OpIndex> arguments,
       std::optional<int> stack_arg_count = std::nullopt) {
     ThrowingScope throwing_scope(this, node);
+    DCHECK(!TooManyArgumentsForCall(arguments.size()));
 
     Callable callable = Builtins::CallableFor(isolate_, builtin);
     const CallInterfaceDescriptor& descriptor = callable.descriptor();
@@ -1476,6 +1498,7 @@ class GraphBuildingNodeProcessor {
       }
     }
 
+    BAILOUT_IF_TOO_MANY_ARGUMENTS_FOR_CALL(arguments.size());
     V<Any> call_idx =
         GenerateBuiltinCall(node, node->builtin(), frame_state,
                             base::VectorOf(arguments), stack_arg_count);
@@ -1514,6 +1537,7 @@ class GraphBuildingNodeProcessor {
     DCHECK_IMPLIES(lazy_deopt_on_throw == LazyDeoptOnThrow::kYes,
                    frame_state.has_value());
 
+    BAILOUT_IF_TOO_MANY_ARGUMENTS_FOR_CALL(arguments.size());
     V<Any> call_idx =
         __ Call(c_entry_stub, frame_state, base::VectorOf(arguments),
                 TSCallDescriptor::Create(call_descriptor, CanThrow::kYes,
@@ -1775,9 +1799,8 @@ class GraphBuildingNodeProcessor {
 
     arguments.push_back(Map(node->context()));
 
-    SetMap(node,
-           GenerateBuiltinCall(node, Builtin::kConstruct, frame_state,
-                               base::VectorOf(arguments), node->num_args()));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kConstruct, frame_state,
+                                  base::VectorOf(arguments), node->num_args());
 
     return maglev::ProcessResult::kContinue;
   }
@@ -1797,9 +1820,9 @@ class GraphBuildingNodeProcessor {
 
     arguments.push_back(Map(node->context()));
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kConstructWithSpread,
-                                     frame_state, base::VectorOf(arguments),
-                                     node->num_args_no_spread()));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kConstructWithSpread,
+                                  frame_state, base::VectorOf(arguments),
+                                  node->num_args_no_spread());
     return maglev::ProcessResult::kContinue;
   }
   maglev::ProcessResult Process(maglev::CheckConstructResult* node,
@@ -1831,8 +1854,8 @@ class GraphBuildingNodeProcessor {
                            __ HeapConstant(node->feedback().vector),
                            Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kKeyedStoreIC, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kKeyedStoreIC, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
   maglev::ProcessResult Process(maglev::GetKeyedGeneric* node,
@@ -1844,8 +1867,8 @@ class GraphBuildingNodeProcessor {
                            __ HeapConstant(node->feedback().vector),
                            Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kKeyedLoadIC, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kKeyedLoadIC, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -1860,8 +1883,8 @@ class GraphBuildingNodeProcessor {
                            __ HeapConstant(node->feedback().vector),
                            Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kStoreIC, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kStoreIC, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
   maglev::ProcessResult Process(maglev::LoadNamedGeneric* node,
@@ -1873,8 +1896,8 @@ class GraphBuildingNodeProcessor {
         __ TaggedIndexConstant(node->feedback().index()),
         __ HeapConstant(node->feedback().vector), Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kLoadIC, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kLoadIC, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -1889,8 +1912,8 @@ class GraphBuildingNodeProcessor {
                            __ HeapConstant(node->feedback().vector),
                            Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kLoadSuperIC, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kLoadSuperIC, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -1913,8 +1936,8 @@ class GraphBuildingNodeProcessor {
         break;
     }
 
-    SetMap(node, GenerateBuiltinCall(node, builtin, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, builtin, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -1927,8 +1950,8 @@ class GraphBuildingNodeProcessor {
         __ TaggedIndexConstant(node->feedback().index()),
         __ HeapConstant(node->feedback().vector), Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kStoreGlobalIC, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kStoreGlobalIC, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -1944,8 +1967,8 @@ class GraphBuildingNodeProcessor {
                            __ HeapConstant(node->feedback().vector),
                            Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kDefineKeyedOwnIC,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kDefineKeyedOwnIC, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -1960,8 +1983,8 @@ class GraphBuildingNodeProcessor {
                            __ HeapConstant(node->feedback().vector),
                            Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kDefineNamedOwnIC,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kDefineNamedOwnIC, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -1974,8 +1997,8 @@ class GraphBuildingNodeProcessor {
         __ TaggedIndexConstant(node->call_slot()),
         __ HeapConstant(node->feedback()), Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kGetIteratorWithFeedback,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kGetIteratorWithFeedback,
+                                  frame_state, base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -1989,8 +2012,8 @@ class GraphBuildingNodeProcessor {
         __ HeapConstant(node->boilerplate_descriptor().object()),
         __ SmiConstant(Smi::FromInt(node->flags())), native_context()};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kCreateShallowObjectLiteral,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kCreateShallowObjectLiteral,
+                                  frame_state, base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2004,8 +2027,8 @@ class GraphBuildingNodeProcessor {
                            __ SmiConstant(Smi::FromInt(node->flags())),
                            native_context()};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kCreateShallowArrayLiteral,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kCreateShallowArrayLiteral,
+                                  frame_state, base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2020,8 +2043,8 @@ class GraphBuildingNodeProcessor {
                            __ HeapConstant(node->feedback().vector),
                            native_context()};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kStoreInArrayLiteralIC,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kStoreInArrayLiteralIC,
+                                  frame_state, base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2032,8 +2055,8 @@ class GraphBuildingNodeProcessor {
     OpIndex arguments[] = {Map(node->object()), Map(node->callable()),
                            Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kInstanceOf, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kInstanceOf, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2046,8 +2069,8 @@ class GraphBuildingNodeProcessor {
         __ SmiConstant(Smi::FromInt(static_cast<int>(node->mode()))),
         Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kDeleteProperty,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kDeleteProperty, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2057,8 +2080,8 @@ class GraphBuildingNodeProcessor {
 
     OpIndex arguments[] = {Map(node->value_input()), Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kToName, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kToName, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2072,8 +2095,8 @@ class GraphBuildingNodeProcessor {
                            __ SmiConstant(Smi::FromInt(node->flags())),
                            native_context()};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kCreateRegExpLiteral,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kCreateRegExpLiteral,
+                                  frame_state, base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2086,8 +2109,8 @@ class GraphBuildingNodeProcessor {
         Map(node->description()), __ WordPtrConstant(node->feedback().index()),
         __ HeapConstant(node->feedback().vector), native_context()};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kGetTemplateObject,
-                                     frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kGetTemplateObject,
+                                  frame_state, base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2101,9 +2124,9 @@ class GraphBuildingNodeProcessor {
         __ HeapConstant(node->boilerplate_descriptor().object()),
         __ SmiConstant(Smi::FromInt(node->flags())), native_context()};
 
-    SetMap(node,
-           GenerateBuiltinCall(node, Builtin::kCreateObjectFromSlowBoilerplate,
-                               frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node,
+                                  Builtin::kCreateObjectFromSlowBoilerplate,
+                                  frame_state, base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2117,9 +2140,9 @@ class GraphBuildingNodeProcessor {
                            __ SmiConstant(Smi::FromInt(node->flags())),
                            native_context()};
 
-    SetMap(node,
-           GenerateBuiltinCall(node, Builtin::kCreateArrayFromSlowBoilerplate,
-                               frame_state, base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node,
+                                  Builtin::kCreateArrayFromSlowBoilerplate,
+                                  frame_state, base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -2151,8 +2174,8 @@ class GraphBuildingNodeProcessor {
                            __ HeapConstant(node->feedback().vector),
                            Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kForInNext, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kForInNext, frame_state,
+                                  base::VectorOf(arguments));
     return maglev::ProcessResult::kContinue;
   }
 
@@ -3051,8 +3074,8 @@ class GraphBuildingNodeProcessor {
     Block* destination = Map(target);
     if (target->is_loop() && (target->predecessor_count() > 2 ||
                               generator_analyzer_.HeaderIsBypassed(target))) {
-      // This loop has multiple forward edge in Maglev, so we'll create an extra
-      // block in Turboshaft that will be the only predecessor.
+      // This loop has multiple forward edges in Maglev, so we'll create an
+      // extra block in Turboshaft that will be the only predecessor.
       auto it = loop_single_edge_predecessors_.find(target);
       if (it != loop_single_edge_predecessors_.end()) {
         destination = it->second;
@@ -4119,8 +4142,8 @@ class GraphBuildingNodeProcessor {
     GET_FRAME_STATE_MAYBE_ABORT(frame_state, node->lazy_deopt_info());
     OpIndex arguments[] = {Map(node->value_input()), Map(node->context())};
 
-    SetMap(node, GenerateBuiltinCall(node, Builtin::kToObject, frame_state,
-                                     base::VectorOf(arguments)));
+    GENERATE_AND_MAP_BUILTIN_CALL(node, Builtin::kToObject, frame_state,
+                                  base::VectorOf(arguments));
 
     return maglev::ProcessResult::kContinue;
   }
@@ -5333,6 +5356,26 @@ class GraphBuildingNodeProcessor {
     }
   }
 
+  OpIndex MapPhiInput(const maglev::Input input, int input_index) {
+    return MapPhiInput(input.node(), input_index);
+  }
+  OpIndex MapPhiInput(const maglev::NodeBase* node, int input_index) {
+    if (V8_UNLIKELY(node == maglev_generator_context_node_)) {
+      OpIndex generator_context = __ GetVariable(generator_context_);
+      if (__ current_block()->Contains(generator_context)) {
+        DCHECK(!__ current_block()->IsLoop());
+        DCHECK(__ output_graph().Get(generator_context).Is<PhiOp>());
+        // If {generator_context} is a Phi defined in the current block and it's
+        // used as input for another Phi, then we need to use it's value from
+        // the correct predecessor, since a Phi can't be an input to another Phi
+        // in the same block.
+        return __ GetPredecessorValue(generator_context_, input_index);
+      }
+      return generator_context;
+    }
+    return Map(node);
+  }
+
   template <typename T>
   V<T> Map(const maglev::Input input) {
     return V<T>::Cast(Map(input.node()));
@@ -5407,7 +5450,7 @@ class GraphBuildingNodeProcessor {
   V<Object> catch_block_begin_ = V<Object>::Invalid();
 
   // Maglev loops can have multiple forward edges, while Turboshaft should only
-  // have a single one. When a Maglev loop has multiple forward edge, we create
+  // have a single one. When a Maglev loop has multiple forward edges, we create
   // an additional Turboshaft block before (which we record in
   // {loop_single_edge_predecessors_}), and jumps to the loop will instead go to
   // this additional block, which will become the only forward predecessor of
