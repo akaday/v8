@@ -993,7 +993,8 @@ V8_EXPORT_PRIVATE bool IsWasmCodegenAllowed(Isolate* isolate,
 V8_EXPORT_PRIVATE DirectHandle<String> ErrorStringForCodegen(
     Isolate* isolate, DirectHandle<Context> context);
 
-Handle<JSObject> GetTypeForFunction(Isolate* isolate, const FunctionSig* sig,
+template <typename T>
+Handle<JSObject> GetTypeForFunction(Isolate* isolate, const Signature<T>* sig,
                                     bool for_exception = false);
 Handle<JSObject> GetTypeForGlobal(Isolate* isolate, bool is_mutable,
                                   ValueType type);
@@ -1070,7 +1071,7 @@ class TruncatedUserString {
 // between parameter types and return types. If {buffer} is non-empty, it will
 // be null-terminated, even if the signature is cut off. Returns the number of
 // characters written, excluding the terminating null-byte.
-size_t PrintSignature(base::Vector<char> buffer, const wasm::FunctionSig*,
+size_t PrintSignature(base::Vector<char> buffer, const CanonicalSig* sig,
                       char delimiter = ':');
 
 V8_EXPORT_PRIVATE size_t

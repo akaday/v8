@@ -88,7 +88,7 @@ TestingModuleBuilder::TestingModuleBuilder(
     // Manually compile an import wrapper and insert it into the instance.
     uint32_t canonical_type_index =
         GetTypeCanonicalizer()->AddRecursiveGroup(maybe_import->sig);
-    const wasm::FunctionSig* sig =
+    const wasm::CanonicalSig* sig =
         GetTypeCanonicalizer()->LookupFunctionSignature(canonical_type_index);
     ResolvedWasmImport resolved({}, -1, maybe_import->js_function, sig,
                                 canonical_type_index,
@@ -480,10 +480,11 @@ void TestBuildingGraph(Zone* zone, compiler::JSGraph* jsgraph,
                        CompilationEnv* env, const FunctionSig* sig,
                        compiler::SourcePositionTable* source_position_table,
                        const uint8_t* start, const uint8_t* end) {
+  // TODO(366180605): Drop the cast!
   compiler::WasmGraphBuilder builder(
-      env, zone, jsgraph, sig, source_position_table,
-      compiler::WasmGraphBuilder::kInstanceParameterMode, nullptr /* isolate */,
-      env->enabled_features);
+      env, zone, jsgraph, reinterpret_cast<const ModuleFunctionSig*>(sig),
+      source_position_table, compiler::WasmGraphBuilder::kInstanceParameterMode,
+      nullptr /* isolate */, env->enabled_features);
   TestBuildingGraphWithBuilder(&builder, zone, sig, start, end);
 }
 

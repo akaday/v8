@@ -138,8 +138,8 @@ WasmCode* WasmImportWrapperCache::ModificationScope::AddWrapper(
 
 WasmCode* WasmImportWrapperCache::CompileWasmImportCallWrapper(
     Isolate* isolate, NativeModule* native_module, ImportCallKind kind,
-    const FunctionSig* sig, uint32_t canonical_sig_index, bool source_positions,
-    int expected_arity, Suspend suspend) {
+    const CanonicalSig* sig, uint32_t canonical_sig_index,
+    bool source_positions, int expected_arity, Suspend suspend) {
   CompilationEnv env = CompilationEnv::ForModule(native_module);
   WasmCompilationResult result = compiler::CompileWasmImportCallWrapper(
       &env, kind, sig, source_positions, expected_arity, suspend);

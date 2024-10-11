@@ -255,12 +255,14 @@ namespace {
 
 // Converts the given {type} into a string representation that can be used in
 // reflective functions. Should be kept in sync with the {GetValueType} helper.
-Handle<String> ToValueTypeString(Isolate* isolate, ValueType type) {
+template <typename T>
+Handle<String> ToValueTypeString(Isolate* isolate, T type) {
   return isolate->factory()->InternalizeUtf8String(base::VectorOf(type.name()));
 }
 }  // namespace
 
-Handle<JSObject> GetTypeForFunction(Isolate* isolate, const FunctionSig* sig,
+template <typename T>
+Handle<JSObject> GetTypeForFunction(Isolate* isolate, const Signature<T>* sig,
                                     bool for_exception) {
   Factory* factory = isolate->factory();
 
@@ -268,7 +270,7 @@ Handle<JSObject> GetTypeForFunction(Isolate* isolate, const FunctionSig* sig,
   int param_index = 0;
   int param_count = static_cast<int>(sig->parameter_count());
   DirectHandle<FixedArray> param_values = factory->NewFixedArray(param_count);
-  for (ValueType type : sig->parameters()) {
+  for (T type : sig->parameters()) {
     DirectHandle<String> type_value = ToValueTypeString(isolate, type);
     param_values->set(param_index++, *type_value);
   }
@@ -289,7 +291,7 @@ Handle<JSObject> GetTypeForFunction(Isolate* isolate, const FunctionSig* sig,
     int result_count = static_cast<int>(sig->return_count());
     DirectHandle<FixedArray> result_values =
         factory->NewFixedArray(result_count);
-    for (ValueType type : sig->returns()) {
+    for (T type : sig->returns()) {
       DirectHandle<String> type_value = ToValueTypeString(isolate, type);
       result_values->set(result_index++, *type_value);
     }
@@ -300,6 +302,9 @@ Handle<JSObject> GetTypeForFunction(Isolate* isolate, const FunctionSig* sig,
 
   return object;
 }
+
+template Handle<JSObject> GetTypeForFunction(
+    Isolate*, const Signature<CanonicalValueType>*, bool);
 
 Handle<JSObject> GetTypeForGlobal(Isolate* isolate, bool is_mutable,
                                   ValueType type) {
@@ -773,7 +778,7 @@ size_t WasmModule::EstimateCurrentMemoryConsumption() const {
   return result;
 }
 
-size_t PrintSignature(base::Vector<char> buffer, const wasm::FunctionSig* sig,
+size_t PrintSignature(base::Vector<char> buffer, const CanonicalSig* sig,
                       char delimiter) {
   if (buffer.empty()) return 0;
   size_t old_size = buffer.size();
@@ -782,11 +787,11 @@ size_t PrintSignature(base::Vector<char> buffer, const wasm::FunctionSig* sig,
     buffer[0] = c;
     buffer += 1;
   };
-  for (wasm::ValueType t : sig->parameters()) {
+  for (CanonicalValueType t : sig->parameters()) {
     append_char(t.short_name());
   }
   append_char(delimiter);
-  for (wasm::ValueType t : sig->returns()) {
+  for (CanonicalValueType t : sig->returns()) {
     append_char(t.short_name());
   }
   buffer[0] = '\0';

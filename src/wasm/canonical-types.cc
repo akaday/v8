@@ -182,14 +182,13 @@ CanonicalTypeIndex TypeCanonicalizer::AddRecursiveGroup(CanonicalType type) {
   return canonical_index;
 }
 
-const FunctionSig* TypeCanonicalizer::LookupFunctionSignature(
+const CanonicalSig* TypeCanonicalizer::LookupFunctionSignature(
     uint32_t canonical_index) const {
   base::MutexGuard mutex_guard(&mutex_);
   // TODO(366180605): Drop explicit conversion.
   auto it = canonical_function_sigs_.find({canonical_index});
   CHECK(it != canonical_function_sigs_.end());
-  // TODO(366180605): Drop the cast!
-  return reinterpret_cast<const FunctionSig*>(it->second);
+  return it->second;
 }
 
 void TypeCanonicalizer::AddPredefinedArrayTypes() {
@@ -421,6 +420,10 @@ bool TypeCanonicalizer::IsFunctionSignature(uint32_t canonical_index) const {
 
 #ifdef DEBUG
 bool TypeCanonicalizer::Contains(const FunctionSig* sig) const {
+  base::MutexGuard mutex_guard(&mutex_);
+  return zone_.Contains(sig);
+}
+bool TypeCanonicalizer::Contains(const CanonicalSig* sig) const {
   base::MutexGuard mutex_guard(&mutex_);
   return zone_.Contains(sig);
 }

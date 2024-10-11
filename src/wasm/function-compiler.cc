@@ -54,8 +54,9 @@ WasmCompilationResult WasmCompilationUnit::ExecuteImportWrapperCompilation(
   // instantiation time.
   auto kind = kDefaultImportCallKind;
   bool source_positions = is_asmjs_module(env->module);
+  // TODO(366180605): Drop the cast!
   WasmCompilationResult result = compiler::CompileWasmImportCallWrapper(
-      env, kind, sig, source_positions,
+      env, kind, reinterpret_cast<const CanonicalSig*>(sig), source_positions,
       static_cast<int>(sig->parameter_count()), wasm::kNoSuspend);
   return result;
 }
@@ -219,7 +220,7 @@ void WasmCompilationUnit::CompileWasmFunction(Counters* counters,
 }
 
 JSToWasmWrapperCompilationUnit::JSToWasmWrapperCompilationUnit(
-    Isolate* isolate, const FunctionSig* sig, uint32_t canonical_sig_index,
+    Isolate* isolate, const CanonicalSig* sig, uint32_t canonical_sig_index,
     const WasmModule* module, WasmEnabledFeatures enabled_features)
     : isolate_(isolate),
       sig_(sig),
@@ -290,7 +291,7 @@ Handle<Code> JSToWasmWrapperCompilationUnit::Finalize() {
 
 // static
 Handle<Code> JSToWasmWrapperCompilationUnit::CompileJSToWasmWrapper(
-    Isolate* isolate, const FunctionSig* sig, uint32_t canonical_sig_index,
+    Isolate* isolate, const CanonicalSig* sig, uint32_t canonical_sig_index,
     const WasmModule* module) {
   // Run the compilation unit synchronously.
   WasmEnabledFeatures enabled_features =
