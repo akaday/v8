@@ -819,6 +819,10 @@ DEFINE_BOOL(trace_protector_invalidation, false,
             "trace protector cell invalidations")
 DEFINE_BOOL(decommit_pooled_pages, true,
             "decommit, rather than discard pooled pages")
+DEFINE_BOOL(
+    zero_unused_memory, false,
+    "Zero unused memory (except for memory which was discarded) on memory "
+    "reducing GCs.")
 
 #ifdef V8_MINORMS_STRING_SHORTCUTTING
 DEFINE_BOOL(minor_ms_shortcut_strings, false,
@@ -1508,31 +1512,6 @@ DEFINE_VALUE_IMPLICATION(optimize_for_size, max_semi_space_size, size_t{1})
 DEFINE_BOOL(wasm_generic_wrapper, true,
             "allow use of the generic js-to-wasm wrapper instead of "
             "per-signature wrappers")
-DEFINE_BOOL(expose_wasm, true, "expose wasm interface to JavaScript")
-// Do not expose wasm in jitless mode.
-//
-// Even in interpreter-only mode, wasm currently still creates executable
-// memory at runtime. Unexpose wasm until this changes.
-// The correctness fuzzers are a special case: many of their test cases are
-// built by fetching a random property from the the global object, and thus
-// the global object layout must not change between configs. That is why we
-// continue exposing wasm on correctness fuzzers even in jitless mode.
-// TODO(jgruber): Remove this once / if wasm can run without executable
-// memory.
-DEFINE_BOOL(jitless_and_not_correctness_fuzzer_suppressions, true,
-            "jitless && !correctness_fuzzer_suppressions")
-DEFINE_NEG_NEG_IMPLICATION(jitless,
-                           jitless_and_not_correctness_fuzzer_suppressions)
-DEFINE_NEG_IMPLICATION(correctness_fuzzer_suppressions,
-                       jitless_and_not_correctness_fuzzer_suppressions)
-#ifdef V8_ENABLE_DRUMBRAKE
-DEFINE_NEG_IMPLICATION(wasm_jitless,
-                       jitless_and_not_correctness_fuzzer_suppressions)
-DEFINE_NEG_IMPLICATION(wasm_jitless_if_available_for_testing,
-                       jitless_and_not_correctness_fuzzer_suppressions)
-#endif  // V8_ENABLE_DRUMBRAKE
-DEFINE_DISABLE_FLAG_IMPLICATION(jitless_and_not_correctness_fuzzer_suppressions,
-                                expose_wasm)
 DEFINE_INT(wasm_num_compilation_tasks, 128,
            "maximum number of parallel compilation tasks for wasm")
 DEFINE_VALUE_IMPLICATION(single_threaded, wasm_num_compilation_tasks, 0)
@@ -1548,8 +1527,7 @@ DEFINE_BOOL(wasm_async_compilation, true,
 DEFINE_NEG_IMPLICATION(single_threaded, wasm_async_compilation)
 DEFINE_BOOL(wasm_test_streaming, false,
             "use streaming compilation instead of async compilation for tests")
-DEFINE_BOOL(wasm_native_module_cache_enabled, true,
-            "enable the native module cache")
+DEFINE_BOOL(wasm_native_module_cache, true, "enable the native module cache")
 DEFINE_BOOL(turboshaft_wasm_wrappers, false,
             "compile the wasm wrappers with Turboshaft (instead of TurboFan)")
 DEFINE_IMPLICATION(turboshaft_wasm, turboshaft_wasm_wrappers)
@@ -1672,8 +1650,8 @@ DEFINE_EXPERIMENTAL_FEATURE(
     "Enable direct calls from wasm to fast API functions with bound "
     "call function to pass the the receiver as first parameter")
 
-DEFINE_EXPERIMENTAL_FEATURE(wasm_deopt,
-                            "enable deopts in optimized wasm functions")
+DEFINE_BOOL(wasm_deopt, false, "enable deopts in optimized wasm functions")
+DEFINE_WEAK_IMPLICATION(future, wasm_deopt)
 // Deopt only works in combination with feedback.
 DEFINE_NEG_NEG_IMPLICATION(liftoff, wasm_deopt)
 // Deopt support for wasm is not implemented for Turbofan.
@@ -1787,7 +1765,7 @@ DEFINE_INT(wasm_max_initial_code_space_reservation, 0,
            "maximum size of the initial wasm code space reservation (in MB)")
 DEFINE_BOOL(stress_wasm_memory_moving, false,
             "always move non-shared bounds-checked Wasm memory on grow")
-DEFINE_BOOL(flush_liftoff_code, false,
+DEFINE_BOOL(flush_liftoff_code, true,
             "enable flushing liftoff code on memory pressure signal")
 
 DEFINE_SIZE_T(wasm_max_module_size, wasm::kV8MaxWasmModuleSize,
@@ -2103,6 +2081,8 @@ DEFINE_INT(memory_reducer_gc_count, 2,
 DEFINE_BOOL(
     external_memory_accounted_in_global_limit, false,
     "External memory limits are computed as part of global limits in v8 Heap.")
+DEFINE_BOOL(gc_speed_uses_counters, false,
+            "Old gen GC speed is computed directly from gc tracer counters.")
 DEFINE_INT(heap_growing_percent, 0,
            "specifies heap growing factor as (1 + heap_growing_percent/100)")
 DEFINE_INT(v8_os_page_size, 0, "override OS page size (in KBytes)")
@@ -2488,8 +2468,8 @@ DEFINE_BOOL(heap_snapshot_on_oom, false,
             "Write a heap snapshot to disk on last-resort GCs")
 DEFINE_INT(heap_snapshot_on_gc, -1,
            "Write a heap snapshot to disk on a certain GC invocation")
-DEFINE_INT(heap_snapshot_string_limit, 1024,
-           "truncate strings to this length in the heap snapshot")
+DEFINE_UINT(heap_snapshot_string_limit, 1024,
+            "truncate strings to this length in the heap snapshot")
 DEFINE_BOOL(heap_profiler_show_hidden_objects, false,
             "use 'native' rather than 'hidden' node type in snapshot")
 DEFINE_BOOL(profile_heap_snapshot, false, "dump time spent on heap snapshot")

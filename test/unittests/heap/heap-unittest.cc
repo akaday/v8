@@ -722,7 +722,7 @@ TEST_F(HeapTest, BlackAllocatedPages) {
   next = arr->address() + arr->Size();
 
   // Expect the page to be black.
-  page = PageMetadata::FromHeapObject(arr->GetHeapObject());
+  page = PageMetadata::FromHeapObject(*arr);
   EXPECT_TRUE(page->Chunk()->IsFlagSet(MemoryChunk::BLACK_ALLOCATED));
 
   // Invoke GC.
@@ -758,7 +758,7 @@ TEST_F(HeapTest, ContainsSlow) {
   CHECK(!heap->lo_space()->ContainsSlow(0));
 }
 
-#ifdef V8_COMPRESS_POINTERS
+#if defined(V8_COMPRESS_POINTERS) && defined(V8_ENABLE_SANDBOX)
 TEST_F(HeapTest, Regress364396306) {
   if (v8_flags.single_generation) return;
   if (v8_flags.separate_gc_phases) return;
@@ -780,8 +780,6 @@ TEST_F(HeapTest, Regress364396306) {
         iso->factory()->NewExternal(external_int);
       } while (space->freelist_length() > 1);
     }
-    // Entries are allocated as marked. Invoke a GC to clear the markbits.
-    InvokeMinorGC();
     {
       v8::HandleScope scope(reinterpret_cast<v8::Isolate*>(iso));
       // Allocate one reachable entry on the same segment to prevent discarding
@@ -829,7 +827,7 @@ TEST_F(HeapTest, Regress364396306) {
 
   delete external_int;
 }
-#endif  // V8_COMPRESS_POINTERS
+#endif  // defined(V8_COMPRESS_POINTERS) && defined(V8_ENABLE_SANDBOX)
 
 }  // namespace internal
 }  // namespace v8

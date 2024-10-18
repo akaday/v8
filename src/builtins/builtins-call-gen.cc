@@ -282,7 +282,7 @@ void CallOrConstructBuiltinsAssembler::CallOrConstructWithArrayLike(
     var_elements = CAST(CallRuntime(Runtime::kCreateListFromArrayLike, context,
                                     arguments_list));
     var_length = LoadAndUntagToWord32ObjectField(var_elements.value(),
-                                                 FixedArray::kLengthOffset);
+                                                 offsetof(FixedArray, length_));
     Goto(&if_done);
   }
 
@@ -904,8 +904,8 @@ TF_BUILTIN(HandleApiCallOrConstruct, CallOrConstructBuiltinsAssembler) {
   {
     // Tail call to the stub while leaving all the incoming JS arguments on
     // the stack.
-    TailCallBuiltin(Builtin::kHandleApiConstruct, context, target, new_target,
-                    argc);
+    TailCallJSBuiltin(Builtin::kHandleApiConstruct, context, target, new_target,
+                      argc);
   }
 }
 

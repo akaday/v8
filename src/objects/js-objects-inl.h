@@ -645,9 +645,11 @@ void JSApiWrapper::SetCppHeapWrappable(IsolateForPointerCompression isolate,
   object_->WriteLazilyInitializedCppHeapPointerField<tag>(
       JSAPIObjectWithEmbedderSlots::kCppHeapWrappableOffset, isolate,
       reinterpret_cast<Address>(instance));
-  if (instance) {
-    WriteBarrier::ForCppHeapPointer(object_, instance);
-  }
+  WriteBarrier::ForCppHeapPointer(
+      object_,
+      object_->RawCppHeapPointerField(
+          JSAPIObjectWithEmbedderSlots::kCppHeapWrappableOffset),
+      instance);
 }
 
 void JSApiWrapper::SetCppHeapWrappable(IsolateForPointerCompression isolate,
@@ -655,9 +657,11 @@ void JSApiWrapper::SetCppHeapWrappable(IsolateForPointerCompression isolate,
   object_->WriteLazilyInitializedCppHeapPointerField(
       JSAPIObjectWithEmbedderSlots::kCppHeapWrappableOffset, isolate,
       reinterpret_cast<Address>(instance), tag);
-  if (instance) {
-    WriteBarrier::ForCppHeapPointer(object_, instance);
-  }
+  WriteBarrier::ForCppHeapPointer(
+      object_,
+      object_->RawCppHeapPointerField(
+          JSAPIObjectWithEmbedderSlots::kCppHeapWrappableOffset),
+      instance);
 }
 
 bool JSMessageObject::DidEnsureSourcePositionsAvailable() const {
@@ -710,7 +714,7 @@ DEF_GETTER(JSObject, GetElementsKind, ElementsKind) {
   // If a GC was caused while constructing this object, the elements
   // pointer may point to a one pointer filler map.
   if (ElementsAreSafeToExamine(cage_base)) {
-    Tagged<Map> map = fixed_array->map(cage_base);
+    Tagged<Map> map = fixed_array->map();
     if (IsSmiOrObjectElementsKind(kind)) {
       CHECK(map == GetReadOnlyRoots(cage_base).fixed_array_map() ||
             map == GetReadOnlyRoots(cage_base).fixed_cow_array_map());

@@ -98,8 +98,9 @@ enum Suspend : int;
 enum Promise : int;
 struct CanonicalTypeIndex;
 class CanonicalValueType;
-class ValueType;  // TODO(366180605): Replace all uses of this.
+class ValueType;
 using CanonicalSig = Signature<CanonicalValueType>;
+struct ModuleTypeIndex;
 class StackMemory;
 }  // namespace wasm
 #endif
@@ -242,7 +243,6 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
                             std::is_convertible_v<Handle<T>, Handle<Name>>>>
   inline Handle<Name> InternalizeName(Handle<T> name);
 
-#ifdef V8_ENABLE_DIRECT_HANDLE
   template <typename T, typename = std::enable_if_t<std::is_convertible_v<
                             DirectHandle<T>, DirectHandle<String>>>>
   inline DirectHandle<String> InternalizeString(DirectHandle<T> string);
@@ -250,7 +250,6 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   template <typename T, typename = std::enable_if_t<std::is_convertible_v<
                             DirectHandle<T>, DirectHandle<Name>>>>
   inline DirectHandle<Name> InternalizeName(DirectHandle<T> name);
-#endif
 
   // String creation functions.  Most of the string creation functions take
   // an AllocationType argument to optionally request that they be
@@ -366,14 +365,16 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<String> NewSurrogatePairString(uint16_t lead, uint16_t trail);
 
   // Create a new string object which holds a proper substring of a string.
-  Handle<String> NewProperSubString(Handle<String> str, int begin, int end);
+  Handle<String> NewProperSubString(Handle<String> str, uint32_t begin,
+                                    uint32_t end);
   // Same, but always copies (never creates a SlicedString).
   // {str} must be flat, {length} must be non-zero.
-  Handle<String> NewCopiedSubstring(DirectHandle<String> str, int begin,
-                                    int length);
+  Handle<String> NewCopiedSubstring(DirectHandle<String> str, uint32_t begin,
+                                    uint32_t length);
 
   // Create a new string object which holds a substring of a string.
-  inline Handle<String> NewSubString(Handle<String> str, int begin, int end);
+  inline Handle<String> NewSubString(Handle<String> str, uint32_t begin,
+                                     uint32_t end);
 
   // Creates a new external String object.  There are two String encodings
   // in the system: one-byte and two-byte.  Unlike other String types, it does
@@ -722,7 +723,8 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<WasmDispatchTable> NewWasmDispatchTable(int length);
   Handle<WasmTypeInfo> NewWasmTypeInfo(
       Address type_address, Handle<Map> opt_parent,
-      DirectHandle<WasmTrustedInstanceData> opt_instance, uint32_t type_index);
+      DirectHandle<WasmTrustedInstanceData> opt_instance,
+      wasm::ModuleTypeIndex type_index);
   Handle<WasmInternalFunction> NewWasmInternalFunction(
       DirectHandle<TrustedObject> ref, int function_index,
       uintptr_t signature_hash);
@@ -732,14 +734,14 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<WasmCapiFunctionData> NewWasmCapiFunctionData(
       Address call_target, DirectHandle<Foreign> embedder_data,
       DirectHandle<Code> wrapper_code, DirectHandle<Map> rtt,
-      wasm::CanonicalTypeIndex canonical_sig_index,
-      const wasm::CanonicalSig* sig, uintptr_t signature_hash);
+      wasm::CanonicalTypeIndex sig_index, const wasm::CanonicalSig* sig,
+      uintptr_t signature_hash);
   Handle<WasmExportedFunctionData> NewWasmExportedFunctionData(
       DirectHandle<Code> export_wrapper,
       DirectHandle<WasmTrustedInstanceData> instance_data,
       DirectHandle<WasmFuncRef> func_ref,
       DirectHandle<WasmInternalFunction> internal_function,
-      const wasm::CanonicalSig* sig, uint32_t canonical_type_index,
+      const wasm::CanonicalSig* sig, wasm::CanonicalTypeIndex type_index,
       int wrapper_budget, wasm::Promise promise);
   Handle<WasmImportData> NewWasmImportData(
       DirectHandle<HeapObject> callable, wasm::Suspend suspend,
@@ -753,7 +755,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   // {opt_call_target} is kNullAddress for JavaScript functions, and
   // non-null for exported Wasm functions.
   Handle<WasmJSFunctionData> NewWasmJSFunctionData(
-      uint32_t canonical_sig_index, DirectHandle<JSReceiver> callable,
+      wasm::CanonicalTypeIndex sig_index, DirectHandle<JSReceiver> callable,
       DirectHandle<Code> wrapper_code, DirectHandle<Map> rtt,
       wasm::Suspend suspend, wasm::Promise promise, uintptr_t signature_hash);
   Handle<WasmResumeData> NewWasmResumeData(
@@ -837,10 +839,14 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<JSMap> NewJSMap();
   Handle<JSSet> NewJSSet();
 
-  // Allocates a bound function.
+  // Allocates a bound function. If direct handles are enabled, it is the
+  // responsibility of the caller to ensure that the memory pointed to by
+  // `bound_args` is scanned during CSS, e.g., it comes from a
+  // `DirectHandleVector<Object>`.
   MaybeHandle<JSBoundFunction> NewJSBoundFunction(
       DirectHandle<JSReceiver> target_function, DirectHandle<JSAny> bound_this,
-      base::Vector<Handle<Object>> bound_args, Handle<HeapObject> prototype);
+      base::Vector<DirectHandle<Object>> bound_args,
+      Handle<HeapObject> prototype);
 
   // Allocates a Harmony proxy.
   Handle<JSProxy> NewJSProxy(DirectHandle<JSReceiver> target,
@@ -859,7 +865,8 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<JSFunction> NewFunctionForTesting(DirectHandle<String> name);
 
   // Create an External object for V8's external API.
-  Handle<JSObject> NewExternal(void* value);
+  Handle<JSObject> NewExternal(
+      void* value, AllocationType allocation = AllocationType::kYoung);
 
   // Allocates a new code object and initializes it to point to the given
   // off-heap entry point.

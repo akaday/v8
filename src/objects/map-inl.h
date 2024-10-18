@@ -1034,13 +1034,12 @@ int Map::InstanceSizeFromSlack(int slack) const {
   return instance_size() - slack * kTaggedSize;
 }
 
-OBJECT_CONSTRUCTORS_IMPL(NormalizedMapCache, WeakFixedArray)
 NEVER_READ_ONLY_SPACE_IMPL(NormalizedMapCache)
 
-int NormalizedMapCache::GetIndex(Tagged<Map> map,
+int NormalizedMapCache::GetIndex(Isolate* isolate, Tagged<Map> map,
                                  Tagged<HeapObject> prototype) {
   DisallowGarbageCollection no_gc;
-  return map->Hash(prototype) % NormalizedMapCache::kEntries;
+  return map->Hash(isolate, prototype) % NormalizedMapCache::kEntries;
 }
 
 DEF_HEAP_OBJECT_PREDICATE(HeapObject, IsNormalizedMapCache) {

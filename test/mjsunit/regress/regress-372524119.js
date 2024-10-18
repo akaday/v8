@@ -2,5 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Just a module file that does nothing.
-export const x = 42;
+// Flags: --stress-compaction
+
+for (let i = 0; i < 100000; i++) {
+    new ArrayBuffer();
+}

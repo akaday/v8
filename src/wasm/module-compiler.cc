@@ -1746,9 +1746,9 @@ namespace {
 
 bool IsI16Array(wasm::ValueType type, const WasmModule* module) {
   if (!type.is_object_reference() || !type.has_index()) return false;
-  uint32_t reftype = type.ref_index();
+  ModuleTypeIndex reftype = type.ref_index();
   if (!module->has_array(reftype)) return false;
-  return module->isorecursive_canonical_type_ids[reftype] ==
+  return module->canonical_type_id(reftype) ==
          TypeCanonicalizer::kPredefinedArrayI16Index;
 }
 
@@ -1756,9 +1756,9 @@ bool IsI8Array(wasm::ValueType type, const WasmModule* module,
                bool allow_nullable) {
   if (!type.is_object_reference() || !type.has_index()) return false;
   if (!allow_nullable && type.is_nullable()) return false;
-  uint32_t reftype = type.ref_index();
+  ModuleTypeIndex reftype = type.ref_index();
   if (!module->has_array(reftype)) return false;
-  return module->isorecursive_canonical_type_ids[reftype] ==
+  return module->canonical_type_id(reftype) ==
          TypeCanonicalizer::kPredefinedArrayI8Index;
 }
 
@@ -4180,15 +4180,12 @@ void CompilationStateImpl::OnCompilationStopped(
   // validation is enabled.
   // The exceptions are currently stringref and imported strings, which are only
   // detected on top-tier compilation.
-  // TODO(372840600): This DCHECK sometimes fails; fix and re-enable it.
-  // Current theory is that NativeModule deserialization from the disk cache
-  // skips function validation and hence doesn't detect features early.
-  // DCHECK(!v8_flags.wasm_lazy_compilation || v8_flags.wasm_lazy_validation ||
-  //       (new_detected_features -
-  //        WasmDetectedFeatures{{WasmDetectedFeature::stringref,
-  //                              WasmDetectedFeature::imported_strings_utf8,
-  //                              WasmDetectedFeature::imported_strings}})
-  //           .empty());
+  DCHECK(!v8_flags.wasm_lazy_compilation || v8_flags.wasm_lazy_validation ||
+         (new_detected_features -
+          WasmDetectedFeatures{{WasmDetectedFeature::stringref,
+                                WasmDetectedFeature::imported_strings_utf8,
+                                WasmDetectedFeature::imported_strings}})
+             .empty());
   // TODO(clemensb): Fix reporting of late detected features (relevant for lazy
   // validation and for stringref).
 }
@@ -4343,20 +4340,20 @@ WasmCode* CompileImportWrapperForTest(Isolate* isolate,
                                       NativeModule* native_module,
                                       ImportCallKind kind,
                                       const CanonicalSig* sig,
-                                      uint32_t canonical_type_index,
+                                      CanonicalTypeIndex type_index,
                                       int expected_arity, Suspend suspend) {
   bool source_positions = is_asmjs_module(native_module->module());
   if (v8_flags.wasm_jitless) {
     WasmImportWrapperCache::ModificationScope cache_scope(
         GetWasmImportWrapperCache());
-    WasmImportWrapperCache::CacheKey key(kind, canonical_type_index,
-                                         expected_arity, suspend);
+    WasmImportWrapperCache::CacheKey key(kind, type_index, expected_arity,
+                                         suspend);
     DCHECK_NULL(cache_scope[key]);
     return nullptr;
   }
 
   return GetWasmImportWrapperCache()->CompileWasmImportCallWrapper(
-      isolate, native_module, kind, sig, canonical_type_index, source_positions,
+      isolate, native_module, kind, sig, type_index, source_positions,
       expected_arity, suspend);
 }
 

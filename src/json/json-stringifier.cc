@@ -519,7 +519,8 @@ MaybeHandle<Object> JsonStringifier::Stringify(Handle<Object> object,
   }
   if (result == UNCHANGED) return factory()->undefined_value();
   if (result == SUCCESS) {
-    if (overflowed_ || current_index_ > String::kMaxLength) {
+    if (overflowed_ ||
+        static_cast<uint32_t>(current_index_) > String::kMaxLength) {
       THROW_NEW_ERROR(isolate_, NewInvalidStringLengthError());
     }
     if (encoding_ == String::ONE_BYTE_ENCODING) {
@@ -605,10 +606,10 @@ bool JsonStringifier::InitializeGap(Handle<Object> gap) {
   if (IsString(*gap)) {
     auto gap_string = Cast<String>(gap);
     if (gap_string->length() > 0) {
-      int gap_length = std::min(gap_string->length(), 10);
+      uint32_t gap_length = std::min(gap_string->length(), 10u);
       gap_ = NewArray<base::uc16>(gap_length + 1);
       String::WriteToFlat(*gap_string, gap_, 0, gap_length);
-      for (int i = 0; i < gap_length; i++) {
+      for (uint32_t i = 0; i < gap_length; i++) {
         if (gap_[i] > String::kMaxOneByteCharCode) {
           ChangeEncoding();
           break;
@@ -619,9 +620,9 @@ bool JsonStringifier::InitializeGap(Handle<Object> gap) {
   } else if (IsNumber(*gap)) {
     double value = std::min(Object::NumberValue(*gap), 10.0);
     if (value > 0) {
-      int gap_length = DoubleToInt32(value);
+      uint32_t gap_length = DoubleToUint32(value);
       gap_ = NewArray<base::uc16>(gap_length + 1);
-      for (int i = 0; i < gap_length; i++) gap_[i] = ' ';
+      for (uint32_t i = 0; i < gap_length; i++) gap_[i] = ' ';
       gap_[gap_length] = '\0';
     }
   }
@@ -1036,17 +1037,13 @@ JsonStringifier::Result JsonStringifier::SerializeDouble(double number) {
 namespace {
 
 bool CanTreatHoleAsUndefined(Isolate* isolate, Tagged<JSArray> object) {
-  // We can treat holes as undefined if the {object}s prototype is either the
-  // initial Object.prototype  or the initial Array.prototype, which are both
-  // guarded by the "no elements" protector.
+  // If the no elements protector is intact, Array.prototype and
+  // Object.prototype are guaranteed to not have elements in any native context.
   if (!Protectors::IsNoElementsIntact(isolate)) return false;
-  Tagged<HeapObject> proto = object->map(isolate)->prototype();
-  if (!isolate->IsInAnyContext(proto, Context::INITIAL_ARRAY_PROTOTYPE_INDEX) &&
-      !isolate->IsInAnyContext(proto,
-                               Context::INITIAL_OBJECT_PROTOTYPE_INDEX)) {
-    return false;
-  }
-  return true;
+  Tagged<Map> map = object->map(isolate);
+  Tagged<NativeContext> native_context = map->map(isolate)->native_context();
+  Tagged<HeapObject> proto = map->prototype();
+  return native_context->get(Context::INITIAL_ARRAY_PROTOTYPE_INDEX) == proto;
 }
 
 }  // namespace
@@ -1689,7 +1686,7 @@ bool JsonStringifier::SerializeString(Handle<String> object) {
 }
 
 void JsonStringifier::Extend() {
-  if (part_length_ >= String::kMaxLength) {
+  if (static_cast<uint32_t>(part_length_) >= String::kMaxLength) {
     // Set the flag and carry on. Delay throwing the exception till the end.
     current_index_ = 0;
     overflowed_ = true;

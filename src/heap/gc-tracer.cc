@@ -621,14 +621,13 @@ void GCTracer::SampleAllocation(base::TimeTicks current,
                                 size_t new_space_counter_bytes,
                                 size_t old_generation_counter_bytes,
                                 size_t embedder_counter_bytes) {
-  // This assumes that counters are unsigned integers so that the subtraction
-  // below works even if the new counter is less than the old counter.
-  size_t new_space_allocated_bytes =
-      new_space_counter_bytes - new_space_allocation_counter_bytes_;
-  size_t old_generation_allocated_bytes =
-      old_generation_counter_bytes - old_generation_allocation_counter_bytes_;
-  size_t embedder_allocated_bytes =
-      embedder_counter_bytes - embedder_allocation_counter_bytes_;
+  int64_t new_space_allocated_bytes = std::max<int64_t>(
+      new_space_counter_bytes - new_space_allocation_counter_bytes_, 0);
+  int64_t old_generation_allocated_bytes = std::max<int64_t>(
+      old_generation_counter_bytes - old_generation_allocation_counter_bytes_,
+      0);
+  int64_t embedder_allocated_bytes = std::max<int64_t>(
+      embedder_counter_bytes - embedder_allocation_counter_bytes_, 0);
   const base::TimeDelta allocation_duration = current - allocation_time_;
   allocation_time_ = current;
 
@@ -1196,14 +1195,9 @@ std::optional<base::TimeDelta> GCTracer::AverageTimeToIncrementalMarkingTask()
   return average_time_to_incremental_marking_task_;
 }
 
-void GCTracer::RecordEmbedderSpeed(size_t bytes, double duration) {
-  if (duration == 0 || bytes == 0) return;
-  double current_speed = bytes / duration;
-  if (recorded_embedder_speed_ == 0.0) {
-    recorded_embedder_speed_ = current_speed;
-  } else {
-    recorded_embedder_speed_ = (recorded_embedder_speed_ + current_speed) / 2;
-  }
+void GCTracer::RecordEmbedderMarkingSpeed(size_t bytes,
+                                          base::TimeDelta duration) {
+  recorded_embedder_marking_.Push(BytesAndDuration(bytes, duration));
 }
 
 void GCTracer::RecordMutatorUtilization(base::TimeTicks mark_compact_end_time,
@@ -1256,9 +1250,7 @@ double GCTracer::IncrementalMarkingSpeedInBytesPerMillisecond() const {
 }
 
 double GCTracer::EmbedderSpeedInBytesPerMillisecond() const {
-  // Note: Returning 0 is ok here as callers check for whether embedder speeds
-  // have been recorded at all.
-  return recorded_embedder_speed_;
+  return BoundedAverageSpeed(recorded_embedder_marking_);
 }
 
 double GCTracer::YoungGenerationSpeedInBytesPerMillisecond(
@@ -1284,7 +1276,11 @@ double GCTracer::FinalIncrementalMarkCompactSpeedInBytesPerMillisecond() const {
   return BoundedAverageSpeed(recorded_incremental_mark_compacts_);
 }
 
-double GCTracer::CombinedMarkCompactSpeedInBytesPerMillisecond() {
+double GCTracer::OldGenerationSpeedInBytesPerMillisecond() {
+  if (v8_flags.gc_speed_uses_counters) {
+    return BoundedAverageSpeed(recorded_major_totals_);
+  }
+
   const double kMinimumMarkingSpeed = 0.5;
   if (combined_mark_compact_speed_cache_ > 0)
     return combined_mark_compact_speed_cache_;
@@ -1307,15 +1303,6 @@ double GCTracer::CombinedMarkCompactSpeedInBytesPerMillisecond() {
     combined_mark_compact_speed_cache_ = speed1 * speed2 / (speed1 + speed2);
   }
   return combined_mark_compact_speed_cache_;
-}
-
-double GCTracer::CombineSpeedsInBytesPerMillisecond(double default_speed,
-                                                    double optional_speed) {
-  constexpr double kMinimumSpeed = 0.5;
-  if (optional_speed < kMinimumSpeed) {
-    return default_speed;
-  }
-  return default_speed * optional_speed / (default_speed + optional_speed);
 }
 
 double GCTracer::NewSpaceAllocationThroughputInBytesPerMillisecond(
@@ -1452,6 +1439,9 @@ void GCTracer::RecordGCSumCounters() {
     marking_background_duration =
         background_scopes_[Scope::MC_BACKGROUND_MARKING];
   }
+
+  recorded_major_totals_.Push(
+      BytesAndDuration(current_.end_object_size, overall_duration));
 
   // Emit trace event counters.
   TRACE_EVENT_INSTANT2(

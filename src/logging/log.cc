@@ -191,7 +191,7 @@ class CodeEventLogger::NameBuffer {
 
   void AppendString(Tagged<String> str) {
     if (str.is_null()) return;
-    int length = 0;
+    uint32_t length = 0;
     std::unique_ptr<char[]> c_str =
         str->ToCString(DISALLOW_NULLS, ROBUST_STRING_TRAVERSAL, &length);
     AppendBytes(c_str.get(), length);
@@ -1234,7 +1234,7 @@ template <StateTag tag>
 class VMStateIfMainThread {
  public:
   explicit VMStateIfMainThread(Isolate* isolate) {
-    if (isolate->IsCurrent()) {
+    if (ThreadId::Current() == isolate->thread_id()) {
       vm_state_.emplace(isolate);
     }
   }
@@ -2488,7 +2488,7 @@ void ExistingCodeLogger::LogCodeObject(Tagged<AbstractCode> object) {
   PtrComprCageBase cage_base(isolate_);
   switch (abstract_code->kind(cage_base)) {
     case CodeKind::INTERPRETED_FUNCTION:
-    case CodeKind::TURBOFAN:
+    case CodeKind::TURBOFAN_JS:
     case CodeKind::BASELINE:
     case CodeKind::MAGLEV:
       return;  // We log this later using LogCompiledFunctions.

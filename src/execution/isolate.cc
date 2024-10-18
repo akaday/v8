@@ -39,6 +39,7 @@
 #include "src/common/assert-scope.h"
 #include "src/common/globals.h"
 #include "src/common/ptr-compr-inl.h"
+#include "src/common/thread-local-storage.h"
 #include "src/compiler-dispatcher/lazy-compile-dispatcher.h"
 #include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 #include "src/date/date.h"
@@ -514,16 +515,10 @@ thread_local Isolate::PerIsolateThreadData* g_current_per_isolate_thread_data_
     V8_CONSTINIT = nullptr;
 thread_local Isolate* g_current_isolate_ V8_CONSTINIT = nullptr;
 
+V8_TLS_DEFINE_GETTER(Isolate::TryGetCurrent, Isolate*, g_current_isolate_)
+
 // static
-Isolate* Isolate::CurrentMaybeBackground() {
-  Isolate* isolate = TryGetCurrent();
-  if (V8_LIKELY(isolate)) {
-    return isolate;
-  }
-  LocalHeap* local_heap = LocalHeap::Current();
-  DCHECK_NOT_NULL(local_heap);
-  return local_heap->heap()->isolate();
-}
+void Isolate::SetCurrent(Isolate* isolate) { g_current_isolate_ = isolate; }
 
 namespace {
 // A global counter for all generated Isolates, might overflow.
@@ -1313,9 +1308,9 @@ void VisitStack(Isolate* isolate, Visitor* visitor,
     switch (frame->type()) {
       case StackFrame::API_CALLBACK_EXIT:
       case StackFrame::BUILTIN_EXIT:
-      case StackFrame::JAVA_SCRIPT_BUILTIN_CONTINUATION:
-      case StackFrame::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH:
-      case StackFrame::TURBOFAN:
+      case StackFrame::JAVASCRIPT_BUILTIN_CONTINUATION:
+      case StackFrame::JAVASCRIPT_BUILTIN_CONTINUATION_WITH_CATCH:
+      case StackFrame::TURBOFAN_JS:
       case StackFrame::MAGLEV:
       case StackFrame::INTERPRETED:
       case StackFrame::BASELINE:
@@ -1533,7 +1528,7 @@ Address Isolate::GetAbstractPC(int* line, int* column) {
   }
 
   if (frame->is_unoptimized()) {
-    UnoptimizedFrame* iframe = static_cast<UnoptimizedFrame*>(frame);
+    UnoptimizedJSFrame* iframe = static_cast<UnoptimizedJSFrame*>(frame);
     Address bytecode_start =
         iframe->GetBytecodeArray()->GetFirstBytecodeAddress();
     return bytecode_start + iframe->GetBytecodeOffset();
@@ -2035,6 +2030,8 @@ Handle<JSMessageObject> Isolate::CreateMessageOrAbort(
 Tagged<Object> Isolate::Throw(Tagged<Object> raw_exception,
                               MessageLocation* location) {
   DCHECK(!has_exception());
+  DCHECK_IMPLIES(IsHole(raw_exception),
+                 raw_exception == ReadOnlyRoots{this}.termination_exception());
   IF_WASM(DCHECK_IMPLIES, trap_handler::IsTrapHandlerEnabled(),
           !trap_handler::IsThreadInWasm());
 
@@ -2048,10 +2045,11 @@ Tagged<Object> Isolate::Throw(Tagged<Object> raw_exception,
       DirectHandle<Script> script = location->script();
       DirectHandle<Object> name(script->GetNameOrSourceURL(), this);
       PrintF("at ");
-      if (IsString(*name) && Cast<String>(*name)->length() > 0)
+      if (IsString(*name) && Cast<String>(*name)->length() > 0) {
         Cast<String>(*name)->PrintOn(stdout);
-      else
+      } else {
         PrintF("<anonymous>");
+      }
 // Script::GetLineNumber and Script::GetColumnNumber can allocate on the heap to
 // initialize the line_ends array, so be careful when calling them.
 #ifdef DEBUG
@@ -2065,13 +2063,11 @@ Tagged<Object> Isolate::Throw(Tagged<Object> raw_exception,
         Script::GetPositionInfo(script, location->end_pos(), &end_pos);
         PrintF(", %d:%d - %d:%d\n", start_pos.line + 1, start_pos.column + 1,
                end_pos.line + 1, end_pos.column + 1);
-        // Make sure to update the raw exception pointer in case it moved.
-        raw_exception = *exception;
       } else {
         PrintF(", line %d\n", script->GetLineNumber(location->start_pos()) + 1);
       }
     }
-    Print(raw_exception);
+    Print(*exception);
     PrintF("Stack Trace:\n");
     PrintStack(stdout);
     PrintF("=========================================================\n");
@@ -2093,7 +2089,7 @@ Tagged<Object> Isolate::Throw(Tagged<Object> raw_exception,
   thread_local_top()->rethrowing_message_ = false;
 
   // Notify debugger of exception.
-  if (is_catchable_by_javascript(raw_exception)) {
+  if (is_catchable_by_javascript(*exception)) {
     std::optional<Tagged<Object>> maybe_exception = debug()->OnThrow(exception);
     if (maybe_exception.has_value()) {
       return *maybe_exception;
@@ -2300,9 +2296,9 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
     if (debug()->ShouldRestartFrame(frame->id())) {
       CancelTerminateExecution();
       CHECK(!catchable_by_js);
-      CHECK(frame->is_java_script());
+      CHECK(frame->is_javascript());
 
-      if (frame->is_optimized()) {
+      if (frame->is_optimized_js()) {
         Tagged<Code> code = frame->LookupCode();
         // The debugger triggers lazy deopt for the "to-be-restarted" frame
         // immediately when the CDP event arrives while paused.
@@ -2454,10 +2450,10 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
 #endif  // V8_ENABLE_WEBASSEMBLY
 
       case StackFrame::MAGLEV:
-      case StackFrame::TURBOFAN: {
+      case StackFrame::TURBOFAN_JS: {
         // For optimized frames we perform a lookup in the handler table.
         if (!catchable_by_js) break;
-        OptimizedFrame* opt_frame = static_cast<OptimizedFrame*>(frame);
+        OptimizedJSFrame* opt_frame = static_cast<OptimizedJSFrame*>(frame);
         int offset = opt_frame->LookupExceptionHandlerInTable(nullptr, nullptr);
         if (offset < 0) break;
         // The code might be an optimized code or a turbofanned builtin.
@@ -2468,8 +2464,8 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
                             StandardFrameConstants::kFixedFrameSizeAboveFp -
                             code->stack_slots() * kSystemPointerSize;
 
-        // TODO(bmeurer): Turbofanned BUILTIN frames appear as TURBOFAN,
-        // but do not have a code kind of TURBOFAN.
+        // TODO(bmeurer): Turbofanned BUILTIN frames appear as TURBOFAN_JS,
+        // but do not have a code kind of TURBOFAN_JS.
         if (CodeKindCanDeoptimize(code->kind()) &&
             code->marked_for_deoptimization()) {
           // If the target code is lazy deoptimized, we jump to the original
@@ -2520,7 +2516,7 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
       case StackFrame::BASELINE: {
         // For interpreted frame we perform a range lookup in the handler table.
         if (!catchable_by_js) break;
-        UnoptimizedFrame* js_frame = UnoptimizedFrame::cast(frame);
+        UnoptimizedJSFrame* js_frame = UnoptimizedJSFrame::cast(frame);
         int register_slots = UnoptimizedFrameConstants::RegisterStackSlotCount(
             js_frame->GetBytecodeArray()->register_count());
         int context_reg = 0;  // Will contain register index holding context.
@@ -2581,7 +2577,7 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
         }
         break;
 
-      case StackFrame::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH: {
+      case StackFrame::JAVASCRIPT_BUILTIN_CONTINUATION_WITH_CATCH: {
         // Builtin continuation frames with catch can handle exceptions.
         if (!catchable_by_js) break;
         JavaScriptBuiltinContinuationWithCatchFrame* js_frame =
@@ -2601,7 +2597,7 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
         break;
     }
 
-    if (frame->is_optimized()) {
+    if (frame->is_optimized_js()) {
       // Remove per-frame stored materialized objects.
       bool removed = materialized_object_store_->Remove(frame->fp());
       USE(removed);
@@ -2642,7 +2638,7 @@ class StackFrameSummaryIterator {
 
  private:
   void InitSummaries() {
-    if (!done() && frame()->is_java_script()) {
+    if (!done() && frame()->is_javascript()) {
       JavaScriptFrame::cast(frame())->Summarize(&summaries_);
       DCHECK_GT(summaries_.size(), 0);
       index_ = summaries_.size() - 1;
@@ -2739,7 +2735,7 @@ Isolate::CatchType PredictExceptionCatchAtFrame(
     // For JavaScript frames we perform a lookup in the handler table.
     case StackFrame::INTERPRETED:
     case StackFrame::BASELINE:
-    case StackFrame::TURBOFAN:
+    case StackFrame::TURBOFAN_JS:
     case StackFrame::MAGLEV:
     case StackFrame::BUILTIN: {
       DCHECK(iterator.has_frame_summary());
@@ -2757,7 +2753,7 @@ Isolate::CatchType PredictExceptionCatchAtFrame(
       return ToCatchType(CatchPredictionFor(code->builtin_id()));
     }
 
-    case StackFrame::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH: {
+    case StackFrame::JAVASCRIPT_BUILTIN_CONTINUATION_WITH_CATCH: {
       Tagged<Code> code = *frame->LookupCode();
       return ToCatchType(CatchPredictionFor(code->builtin_id()));
     }
@@ -3373,7 +3369,7 @@ bool CallsCatchMethod(Isolate* isolate, Handle<BytecodeArray> bytecode_array,
 }
 
 bool CallsCatchMethod(const StackFrameSummaryIterator& iterator) {
-  if (!iterator.frame()->is_java_script()) {
+  if (!iterator.frame()->is_javascript()) {
     return false;
   }
   if (iterator.frame_summary().IsJavaScript()) {
@@ -3479,7 +3475,7 @@ bool Isolate::WalkCallStackAndPromiseTree(
       caught = false;
     }
 
-    if (iter.frame()->is_java_script()) {
+    if (iter.frame()->is_javascript()) {
       bool debuggable = false;
       DCHECK(iter.has_frame_summary());
       const FrameSummary& summary = iter.frame_summary();
@@ -4523,7 +4519,8 @@ void Isolate::Deinit() {
     shared_trusted_pointer_space_ = nullptr;
   }
 
-  GetProcessWideCodePointerTable()->TearDownSpace(heap()->code_pointer_space());
+  IsolateGroup::current()->code_pointer_table()->TearDownSpace(
+      heap()->code_pointer_space());
 #endif  // V8_ENABLE_SANDBOX
 #ifdef V8_ENABLE_LEAPTIERING
   GetProcessWideJSDispatchTable()->TearDownSpace(
@@ -4538,7 +4535,7 @@ void Isolate::Deinit() {
 
 void Isolate::SetIsolateThreadLocals(Isolate* isolate,
                                      PerIsolateThreadData* data) {
-  g_current_isolate_ = isolate;
+  Isolate::SetCurrent(isolate);
   g_current_per_isolate_thread_data_ = data;
 
 #ifdef V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES
@@ -4840,7 +4837,7 @@ void Isolate::NotifyExceptionPropagationCallback() {
                                       v8::ExceptionContext::kAttributeGet);
       return;
     }
-    case StackFrame::TURBOFAN:
+    case StackFrame::TURBOFAN_JS:
       // This must be a fast Api call.
       CHECK(it.frame()->InFastCCall());
       // TODO(ishell): support fast Api calls.
@@ -5577,7 +5574,7 @@ bool Isolate::Init(SnapshotData* startup_snapshot_data,
 #endif  // V8_COMPRESS_POINTERS
 
 #ifdef V8_ENABLE_SANDBOX
-  GetProcessWideCodePointerTable()->InitializeSpace(
+  IsolateGroup::current()->code_pointer_table()->InitializeSpace(
       heap()->code_pointer_space());
   if (owns_shareable_data()) {
     isolate_data_.shared_trusted_pointer_table_ = new TrustedPointerTable();
@@ -5980,7 +5977,7 @@ void Isolate::DumpAndResetBuiltinsProfileData() {
 
 void Isolate::IncreaseConcurrentOptimizationPriority(
     CodeKind kind, Tagged<SharedFunctionInfo> function) {
-  DCHECK(kind == CodeKind::TURBOFAN);
+  DCHECK_EQ(kind, CodeKind::TURBOFAN_JS);
   optimizing_compile_dispatcher()->Prioritize(function);
 }
 
@@ -6073,7 +6070,7 @@ void Isolate::MaybeInitializeVectorListFromHeap() {
   }
 
   // Collect existing feedback vectors.
-  std::vector<Handle<FeedbackVector>> vectors;
+  DirectHandleVector<FeedbackVector> vectors(this);
 
   {
     HeapObjectIterator heap_iterator(heap());
@@ -6106,33 +6103,26 @@ void Isolate::set_date_cache(DateCache* date_cache) {
 }
 
 Isolate::KnownPrototype Isolate::IsArrayOrObjectOrStringPrototype(
-    Tagged<Object> object) {
-  Tagged<Object> context = heap()->native_contexts_list();
-  while (!IsUndefined(context, this)) {
-    Tagged<Context> current_context = Cast<Context>(context);
-    if (current_context->initial_object_prototype() == object) {
-      return KnownPrototype::kObject;
-    } else if (current_context->initial_array_prototype() == object) {
-      return KnownPrototype::kArray;
-    } else if (current_context->initial_string_prototype() == object) {
-      return KnownPrototype::kString;
-    }
-    context = current_context->next_context_link();
+    Tagged<JSObject> object) {
+  Tagged<Map> metamap = object->map(this)->map(this);
+  Tagged<NativeContext> native_context = metamap->native_context();
+  if (native_context->initial_object_prototype() == object) {
+    return KnownPrototype::kObject;
+  } else if (native_context->initial_array_prototype() == object) {
+    return KnownPrototype::kArray;
+  } else if (native_context->initial_string_prototype() == object) {
+    return KnownPrototype::kString;
   }
   return KnownPrototype::kNone;
 }
 
-bool Isolate::IsInAnyContext(Tagged<Object> object, uint32_t index) {
+bool Isolate::IsInCreationContext(Tagged<JSObject> object, uint32_t index) {
   DisallowGarbageCollection no_gc;
-  Tagged<Object> context = heap()->native_contexts_list();
-  while (!IsUndefined(context, this)) {
-    Tagged<Context> current_context = Cast<Context>(context);
-    if (current_context->get(index) == object) {
-      return true;
-    }
-    context = current_context->next_context_link();
-  }
-  return false;
+  Tagged<Map> metamap = object->map(this)->map(this);
+  // Filter out native-context independent objects.
+  if (metamap == ReadOnlyRoots(this).meta_map()) return false;
+  Tagged<NativeContext> native_context = metamap->native_context();
+  return native_context->get(index) == object;
 }
 
 void Isolate::UpdateNoElementsProtectorOnSetElement(

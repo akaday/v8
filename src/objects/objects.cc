@@ -145,7 +145,7 @@ ShouldThrow GetShouldThrow(Isolate* isolate, Maybe<ShouldThrow> should_throw) {
   for (StackFrameIterator it(isolate, isolate->thread_local_top(),
                              StackFrameIterator::NoHandles{});
        !it.done(); it.Advance()) {
-    if (!it.frame()->is_java_script()) continue;
+    if (!it.frame()->is_javascript()) continue;
 
     // Get the language mode from closure.
     JavaScriptFrame* js_frame = static_cast<JavaScriptFrame*>(it.frame());
@@ -479,8 +479,8 @@ DirectHandle<String> NoSideEffectsErrorToString(Isolate* isolate,
   if (msg_str->length() == 0) return name_str;
 
   constexpr const char error_suffix[] = "<a very large string>";
-  constexpr int error_suffix_size = sizeof(error_suffix);
-  int suffix_size = std::min(error_suffix_size, msg_str->length());
+  constexpr uint32_t error_suffix_size = sizeof(error_suffix);
+  uint32_t suffix_size = std::min(error_suffix_size, msg_str->length());
 
   IncrementalStringBuilder builder(isolate);
   if (name_str->length() + suffix_size + 2 /* ": " */ > String::kMaxLength) {
@@ -4169,10 +4169,9 @@ Address JSArray::ArrayJoinConcatToSequentialString(Isolate* isolate,
   return dest.ptr();
 }
 
-uint32_t StringHasher::MakeArrayIndexHash(uint32_t value, int length) {
+uint32_t StringHasher::MakeArrayIndexHash(uint32_t value, uint32_t length) {
   // For array indexes mix the length into the hash as an array index could
   // be zero.
-  DCHECK_GT(length, 0);
   DCHECK_LE(length, String::kMaxArrayIndexSize);
   DCHECK(TenToThe(String::kMaxCachedArrayIndexLength) <
          (1 << String::kArrayIndexValueBits));
@@ -4448,7 +4447,7 @@ bool Script::GetPositionInfoInternal(
   if (info->line_end > 0) {
     DCHECK(IsString(source()));
     Tagged<String> src = Cast<String>(source());
-    if (src->length() >= info->line_end &&
+    if (src->length() >= static_cast<uint32_t>(info->line_end) &&
         src->Get(info->line_end - 1) == '\r') {
       info->line_end--;
     }
@@ -4862,7 +4861,7 @@ Handle<Object> JSPromise::Fulfill(DirectHandle<JSPromise> promise,
 #ifdef V8_ENABLE_JAVASCRIPT_PROMISE_HOOKS
   if (isolate->HasContextPromiseHooks()) {
     isolate->raw_native_context()->RunPromiseHook(
-        PromiseHookType::kResolve, promise,
+        PromiseHookType::kResolve, indirect_handle(promise, isolate),
         isolate->factory()->undefined_value());
   }
 #endif
@@ -4977,8 +4976,8 @@ MaybeHandle<Object> JSPromise::Resolve(Handle<JSPromise> promise,
   // %ObjectPrototype%, meaning that such lookups are guaranteed to yield
   // undefined without triggering any side-effects.
   if (IsJSPromise(*receiver) &&
-      isolate->IsInAnyContext(receiver->map()->prototype(),
-                              Context::PROMISE_PROTOTYPE_INDEX) &&
+      receiver->map()->prototype()->map()->instance_type() ==
+          JS_PROMISE_PROTOTYPE_TYPE &&
       Protectors::IsPromiseThenLookupChainIntact(isolate)) {
     // We can skip the "then" lookup on {resolution} if its [[Prototype]]
     // is the (initial) Promise.prototype and the Promise#then protector
@@ -5153,12 +5152,12 @@ Handle<Object> JSPromise::TriggerPromiseReactions(
 
 template <typename Derived, typename Shape>
 void HashTable<Derived, Shape>::IteratePrefix(ObjectVisitor* v) {
-  BodyDescriptorBase::IteratePointers(*this, 0, kElementsStartOffset, v);
+  BodyDescriptorBase::IteratePointers(this, 0, kElementsStartOffset, v);
 }
 
 template <typename Derived, typename Shape>
 void HashTable<Derived, Shape>::IterateElements(ObjectVisitor* v) {
-  BodyDescriptorBase::IteratePointers(*this, kElementsStartOffset,
+  BodyDescriptorBase::IteratePointers(this, kElementsStartOffset,
                                       SizeFor(length()), v);
 }
 
@@ -5211,7 +5210,7 @@ void HashTable<Derived, Shape>::Rehash(PtrComprCageBase cage_base,
   }
 
   // Rehash the elements.
-  ReadOnlyRoots roots = GetReadOnlyRoots(cage_base);
+  ReadOnlyRoots roots = GetReadOnlyRoots();
   for (InternalIndex i : this->IterateEntries()) {
     uint32_t from_index = EntryToIndex(i);
     Tagged<Object> k = this->get(from_index);
@@ -5681,7 +5680,7 @@ void NumberDictionary::UpdateMaxNumberKey(uint32_t key,
   // elements.
   if (key > kRequiresSlowElementsLimit) {
     if (!dictionary_holder.is_null()) {
-      dictionary_holder->RequireSlowElements(*this);
+      dictionary_holder->RequireSlowElements(this);
     }
     set_requires_slow_elements();
     return;
@@ -5780,7 +5779,7 @@ Handle<FixedArray> BaseNameDictionary<Derived, Shape>::IterationIndices(
 template <typename Derived, typename Shape>
 Tagged<Object> Dictionary<Derived, Shape>::SlowReverseLookup(
     Tagged<Object> value) {
-  Tagged<Derived> dictionary = Cast<Derived>(*this);
+  Tagged<Derived> dictionary = Cast<Derived>(this);
   ReadOnlyRoots roots = dictionary->GetReadOnlyRoots();
   for (InternalIndex i : dictionary->IterateEntries()) {
     Tagged<Object> k;
@@ -5805,7 +5804,7 @@ template <typename Derived, typename Shape>
 Tagged<Object> ObjectHashTableBase<Derived, Shape>::Lookup(
     PtrComprCageBase cage_base, Handle<Object> key, int32_t hash) {
   DisallowGarbageCollection no_gc;
-  ReadOnlyRoots roots = this->GetReadOnlyRoots(cage_base);
+  ReadOnlyRoots roots = this->GetReadOnlyRoots();
   DCHECK(this->IsKey(roots, *key));
 
   InternalIndex entry = this->FindEntry(cage_base, roots, key, hash);
@@ -5817,8 +5816,8 @@ Tagged<Object> ObjectHashTableBase<Derived, Shape>::Lookup(
 // CodeStubAssembler::NameToIndexHashTableLookup.
 int NameToIndexHashTable::Lookup(Handle<Name> key) {
   DisallowGarbageCollection no_gc;
-  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
-  ReadOnlyRoots roots = this->GetReadOnlyRoots(cage_base);
+  PtrComprCageBase cage_base = GetPtrComprCageBase(this);
+  ReadOnlyRoots roots = this->GetReadOnlyRoots();
 
   InternalIndex entry = this->FindEntry(cage_base, roots, key, key->hash());
   if (entry.is_not_found()) return -1;
@@ -5829,8 +5828,8 @@ template <typename Derived, typename Shape>
 Tagged<Object> ObjectHashTableBase<Derived, Shape>::Lookup(Handle<Object> key) {
   DisallowGarbageCollection no_gc;
 
-  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
-  ReadOnlyRoots roots = this->GetReadOnlyRoots(cage_base);
+  PtrComprCageBase cage_base = GetPtrComprCageBase(this);
+  ReadOnlyRoots roots = this->GetReadOnlyRoots();
   DCHECK(this->IsKey(roots, *key));
 
   // If the object does not have an identity hash, it was never used as a key.
@@ -5844,7 +5843,7 @@ Tagged<Object> ObjectHashTableBase<Derived, Shape>::Lookup(Handle<Object> key) {
 template <typename Derived, typename Shape>
 Tagged<Object> ObjectHashTableBase<Derived, Shape>::Lookup(Handle<Object> key,
                                                            int32_t hash) {
-  return Lookup(GetPtrComprCageBase(*this), key, hash);
+  return Lookup(GetPtrComprCageBase(this), key, hash);
 }
 
 template <typename Derived, typename Shape>
@@ -5990,7 +5989,7 @@ void ObjectHashTableBase<Derived, Shape>::RemoveEntry(InternalIndex entry) {
 template <typename Derived, int N>
 std::array<Tagged<Object>, N> ObjectMultiHashTableBase<Derived, N>::Lookup(
     Handle<Object> key) {
-  return Lookup(GetPtrComprCageBase(*this), key);
+  return Lookup(GetPtrComprCageBase(this), key);
 }
 
 template <typename Derived, int N>
@@ -5998,7 +5997,7 @@ std::array<Tagged<Object>, N> ObjectMultiHashTableBase<Derived, N>::Lookup(
     PtrComprCageBase cage_base, Handle<Object> key) {
   DisallowGarbageCollection no_gc;
 
-  ReadOnlyRoots roots = this->GetReadOnlyRoots(cage_base);
+  ReadOnlyRoots roots = this->GetReadOnlyRoots();
   DCHECK(this->IsKey(roots, *key));
 
   Tagged<Object> hash_obj = Object::GetHash(*key);

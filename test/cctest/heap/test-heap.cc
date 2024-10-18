@@ -423,7 +423,7 @@ static void VerifyStringAllocation(Isolate* isolate, const char* string) {
                                ->NewStringFromUtf8(base::CStrVector(string))
                                .ToHandleChecked();
   CHECK_EQ(strlen(string), s->length());
-  for (int index = 0; index < s->length(); index++) {
+  for (uint32_t index = 0; index < s->length(); index++) {
     CHECK_EQ(static_cast<uint16_t>(string[index]), s->Get(index));
   }
 }
@@ -4722,7 +4722,7 @@ static Handle<InstructionStream> DummyOptimizedCode(Isolate* isolate) {
   masm.Drop(2);
   masm.GetCode(isolate, &desc);
   Handle<InstructionStream> code(
-      Factory::CodeBuilder(isolate, desc, CodeKind::TURBOFAN)
+      Factory::CodeBuilder(isolate, desc, CodeKind::TURBOFAN_JS)
           .set_self_reference(masm.CodeObject())
           .set_empty_source_position_table()
           .set_deoptimization_data(DeoptimizationData::Empty(isolate))
@@ -5527,13 +5527,13 @@ TEST(PreprocessStackTrace) {
 }
 
 void AllocateInSpace(Isolate* isolate, size_t bytes, AllocationSpace space) {
-  CHECK_LE(FixedArray::kHeaderSize, bytes);
+  CHECK_LE(OFFSET_OF_DATA_START(FixedArray), bytes);
   CHECK(IsAligned(bytes, kTaggedSize));
   Factory* factory = isolate->factory();
   HandleScope scope(isolate);
   AlwaysAllocateScopeForTesting always_allocate(isolate->heap());
-  int elements =
-      static_cast<int>((bytes - FixedArray::kHeaderSize) / kTaggedSize);
+  int elements = static_cast<int>((bytes - OFFSET_OF_DATA_START(FixedArray)) /
+                                  kTaggedSize);
   DirectHandle<FixedArray> array = factory->NewFixedArray(
       elements,
       space == NEW_SPACE ? AllocationType::kYoung : AllocationType::kOld);
@@ -5765,8 +5765,8 @@ HEAP_TEST(Regress587004) {
   Heap* heap = CcTest::heap();
   Isolate* isolate = CcTest::i_isolate();
   Factory* factory = isolate->factory();
-  const int N =
-      (kMaxRegularHeapObjectSize - FixedArray::kHeaderSize) / kTaggedSize;
+  const int N = (kMaxRegularHeapObjectSize - OFFSET_OF_DATA_START(FixedArray)) /
+                kTaggedSize;
   DirectHandle<FixedArray> array =
       factory->NewFixedArray(N, AllocationType::kOld);
   CHECK(heap->old_space()->Contains(*array));

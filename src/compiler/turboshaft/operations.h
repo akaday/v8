@@ -273,12 +273,12 @@ using Variable = SnapshotTable<OpIndex, VariableData>::Key;
   V(TransitionAndStoreArrayElement)             \
   V(TransitionElementsKind)                     \
   V(DebugPrint)                                 \
-  V(CheckTurboshaftTypeOf)
+  V(CheckTurboshaftTypeOf)                      \
+  V(Word32SignHint)
 
 // These Operations are the lowest level handled by Turboshaft, and are
 // supported by the InstructionSelector.
 #define TURBOSHAFT_MACHINE_OPERATION_LIST(V) \
-  V(Identity)                                \
   V(WordBinop)                               \
   V(FloatBinop)                              \
   V(Word32PairBinop)                         \
@@ -413,14 +413,14 @@ inline constexpr bool IsBlockTerminator(Opcode opcode) {
 
 // Operations that can throw and that have static output representations.
 #define TURBOSHAFT_THROWING_STATIC_OUTPUTS_OPERATIONS_LIST(V) \
-  TURBOSHAFT_JS_THROWING_OPERATION_LIST(V)                    \
-  V(FastApiCall)
+  TURBOSHAFT_JS_THROWING_OPERATION_LIST(V)
 
 // This list repeats the operations that may throw and need to be followed by
 // `DidntThrow`.
 #define TURBOSHAFT_THROWING_OPERATIONS_LIST(V)          \
   TURBOSHAFT_THROWING_STATIC_OUTPUTS_OPERATIONS_LIST(V) \
-  V(Call)
+  V(Call)                                               \
+  V(FastApiCall)
 
 // Operations that need to be followed by `DidntThrowOp`.
 inline constexpr bool MayThrow(Opcode opcode) {
@@ -1533,29 +1533,35 @@ struct ToNumberOrNumericOp : FixedArityOperationT<3, ToNumberOrNumericOp> {
   auto options() const { return std::tuple{kind, lazy_deopt_on_throw}; }
 };
 
-// Note that IdentityOp is always automatically removed by CopyingPhase, so that
-// they don't block optimizations down the line.
-struct IdentityOp : FixedArityOperationT<1, IdentityOp> {
-  RegisterRepresentation rep;
+// Word32SignHint is a type-hint used during Maglev->Turboshaft
+// translation to avoid having multiple values being used as both Int32 and
+// Uint32: for such cases, Maglev has explicit conversions, and it's helpful to
+// also have them in Turboshaft. Eventually, Word32SignHint is just a
+// nop in Turboshaft, since as far as Machine level graph is concerned, both
+// Int32 and Uint32 are just Word32 registers.
+struct Word32SignHintOp : FixedArityOperationT<1, Word32SignHintOp> {
+  enum class Sign : bool { kSigned, kUnsigned };
+  Sign sign;
 
   static constexpr OpEffects effects = OpEffects();
   base::Vector<const RegisterRepresentation> outputs_rep() const {
-    return base::VectorOf(&rep, 1);
+    return RepVector<RegisterRepresentation::Word32()>();
   }
 
   base::Vector<const MaybeRegisterRepresentation> inputs_rep(
       ZoneVector<MaybeRegisterRepresentation>& storage) const {
-    return InputsRepFactory::SingleRep(rep);
+    return MaybeRepVector<MaybeRegisterRepresentation::Word32()>();
   }
 
-  V<Any> input() const { return Base::input<Any>(0); }
+  V<Word32> input() const { return Base::input<Word32>(0); }
 
-  IdentityOp(V<Any> input, RegisterRepresentation rep)
-      : Base(input), rep(rep) {}
+  Word32SignHintOp(V<Word32> input, Sign sign) : Base(input), sign(sign) {}
 
   void Validate(const Graph& graph) const {}
-  auto options() const { return std::tuple{rep}; }
+  auto options() const { return std::tuple{sign}; }
 };
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
+                                           Word32SignHintOp::Sign sign);
 
 struct WordBinopOp : FixedArityOperationT<2, WordBinopOp> {
   enum class Kind : uint8_t {
@@ -6325,20 +6331,17 @@ struct FastApiCallOp : OperationT<FastApiCallOp> {
   static constexpr uint32_t kFailureValue = 0;
 
   const FastApiCallParameters* parameters;
-
-  // FastApiCallOp has two outputs so far:
-  // (1) a `should_fallback` flag, indicating that a slow call should be done;
-  // (2) the actual return value, which is always tagged.
-  // TODO(ahaas) Remove the `should_fallback` flag once fast api functions don't
-  // use it anymore.
-  THROWING_OP_BOILERPLATE(RegisterRepresentation::Word32(),
-                          RegisterRepresentation::Tagged())
+  base::Vector<const RegisterRepresentation> out_reps;
+  LazyDeoptOnThrow lazy_deopt_on_throw;
 
   static constexpr OpEffects effects = OpEffects().CanCallAnything();
 
   // There are three inputs that are not parameters, the frame state, the data
   // argument, and the context.
   static constexpr int kNumNonParamInputs = 3;
+
+  // The outputs are produced by the `DidntThrow` operation.
+  base::Vector<const RegisterRepresentation> outputs_rep() const { return {}; }
 
   base::Vector<const MaybeRegisterRepresentation> inputs_rep(
       ZoneVector<MaybeRegisterRepresentation>& storage) const {
@@ -6409,9 +6412,11 @@ struct FastApiCallOp : OperationT<FastApiCallOp> {
 
   FastApiCallOp(V<FrameState> frame_state, V<Object> data_argument,
                 V<Context> context, base::Vector<const OpIndex> arguments,
-                const FastApiCallParameters* parameters)
+                const FastApiCallParameters* parameters,
+                base::Vector<const RegisterRepresentation> out_reps)
       : Base(kNumNonParamInputs + arguments.size()),
         parameters(parameters),
+        out_reps(out_reps),
         lazy_deopt_on_throw(LazyDeoptOnThrow::kNo) {
     base::Vector<OpIndex> inputs = this->inputs();
     inputs[0] = frame_state;
@@ -6428,21 +6433,26 @@ struct FastApiCallOp : OperationT<FastApiCallOp> {
     V<Context> mapped_context = mapper.Map(context());
     auto mapped_arguments = mapper.template Map<8>(arguments());
     return fn(mapped_frame_state, mapped_data_argument, mapped_context,
-              base::VectorOf(mapped_arguments), parameters);
+              base::VectorOf(mapped_arguments), parameters, out_reps);
   }
 
   void Validate(const Graph& graph) const {
   }
 
-  static FastApiCallOp& New(Graph* graph, V<FrameState> frame_state,
-                            V<Object> data_argument, V<Context> context,
-                            base::Vector<const OpIndex> arguments,
-                            const FastApiCallParameters* parameters) {
+  static FastApiCallOp& New(
+      Graph* graph, V<FrameState> frame_state, V<Object> data_argument,
+      V<Context> context, base::Vector<const OpIndex> arguments,
+      const FastApiCallParameters* parameters,
+      base::Vector<const RegisterRepresentation> out_reps) {
     return Base::New(graph, kNumNonParamInputs + arguments.size(), frame_state,
-                     data_argument, context, arguments, parameters);
+                     data_argument, context, arguments, parameters, out_reps);
   }
 
-  auto options() const { return std::tuple{parameters, lazy_deopt_on_throw}; }
+  // out_reps[0] is always word32.
+  auto options() const {
+    DCHECK_EQ(out_reps[0], RegisterRepresentation::Word32());
+    return std::tuple{parameters, out_reps[1], lazy_deopt_on_throw};
+  }
 };
 
 struct RuntimeAbortOp : FixedArityOperationT<0, RuntimeAbortOp> {
@@ -6788,16 +6798,16 @@ struct AssertNotNullOp : FixedArityOperationT<1, AssertNotNullOp> {
   auto options() const { return std::tuple{type, trap_id}; }
 };
 
-// The runtime type (RTT) is a value representing a conrete type (in this case
+// The runtime type (RTT) is a value representing a concrete type (in this case
 // heap-type). The canonical RTTs are implicitly created values and invisible to
 // the user in wasm-gc MVP. (See
 // https://github.com/WebAssembly/gc/blob/main/proposals/gc/MVP.md#runtime-types)
 struct RttCanonOp : FixedArityOperationT<1, RttCanonOp> {
-  uint32_t type_index;
+  wasm::ModuleTypeIndex type_index;
 
   static constexpr OpEffects effects = OpEffects();
 
-  explicit RttCanonOp(V<FixedArray> rtts, uint32_t type_index)
+  explicit RttCanonOp(V<FixedArray> rtts, wasm::ModuleTypeIndex type_index)
       : Base(rtts), type_index(type_index) {}
 
   V<FixedArray> rtts() const { return input<FixedArray>(0); }
@@ -6986,7 +6996,7 @@ struct StructGetOp : FixedArityOperationT<1, StructGetOp> {
   bool is_signed;  // `false` only for unsigned packed type accesses.
   CheckForNull null_check;
   const wasm::StructType* type;
-  uint32_t type_index;
+  wasm::ModuleTypeIndex type_index;
   int field_index;
 
   OpEffects Effects() const {
@@ -7003,7 +7013,7 @@ struct StructGetOp : FixedArityOperationT<1, StructGetOp> {
   }
 
   StructGetOp(V<WasmStructNullable> object, const wasm::StructType* type,
-              uint32_t type_index, int field_index, bool is_signed,
+              wasm::ModuleTypeIndex type_index, int field_index, bool is_signed,
               CheckForNull null_check)
       : Base(object),
         is_signed(is_signed),
@@ -7036,7 +7046,7 @@ struct StructGetOp : FixedArityOperationT<1, StructGetOp> {
 struct StructSetOp : FixedArityOperationT<2, StructSetOp> {
   CheckForNull null_check;
   const wasm::StructType* type;
-  uint32_t type_index;
+  wasm::ModuleTypeIndex type_index;
   int field_index;
 
   OpEffects Effects() const {
@@ -7053,7 +7063,7 @@ struct StructSetOp : FixedArityOperationT<2, StructSetOp> {
   }
 
   StructSetOp(V<WasmStructNullable> object, V<Any> value,
-              const wasm::StructType* type, uint32_t type_index,
+              const wasm::StructType* type, wasm::ModuleTypeIndex type_index,
               int field_index, CheckForNull null_check)
       : Base(object, value),
         null_check(null_check),
@@ -9129,12 +9139,16 @@ inline size_t input_count(const FeedbackSource) { return 0; }
 inline size_t input_count(const ZoneRefSet<Map>) { return 0; }
 inline size_t input_count(ConstantOp::Storage) { return 0; }
 inline size_t input_count(Type) { return 0; }
+inline size_t input_count(base::Vector<const RegisterRepresentation>) {
+  return 0;
+}
 #ifdef V8_ENABLE_WEBASSEMBLY
 constexpr size_t input_count(const wasm::WasmGlobal*) { return 0; }
 constexpr size_t input_count(const wasm::StructType*) { return 0; }
 constexpr size_t input_count(const wasm::ArrayType*) { return 0; }
 constexpr size_t input_count(wasm::ValueType) { return 0; }
 constexpr size_t input_count(WasmTypeCheckConfig) { return 0; }
+constexpr size_t input_count(wasm::ModuleTypeIndex) { return 0; }
 #endif
 
 // All parameters that are OpIndex-like (ie, OpIndex, and OpIndex containers)
@@ -9210,6 +9224,8 @@ struct ThrowingOpHasLazyDeoptOption<CallOp, void> : std::true_type {};
 template <>
 struct ThrowingOpHasProperMembers<CallOp, void> : std::true_type {};
 
+template <>
+struct ThrowingOpHasProperMembers<FastApiCallOp, void> : std::true_type {};
 }  // namespace details
 
 #define THROWING_OP_LOOKS_VALID(Name)                             \

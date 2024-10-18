@@ -6084,7 +6084,8 @@ static inline int WriteHelper(i::Isolate* i_isolate, const String* string,
   auto str = Utils::OpenHandle(string);
   str = i::String::Flatten(i_isolate, str);
   int end = start + length;
-  if ((length == -1) || (length > str->length() - start)) end = str->length();
+  if ((length == -1) || (static_cast<uint32_t>(length) > str->length() - start))
+    end = str->length();
   if (end < 0) return 0;
   int write_length = end - start;
   if (start < end) i::String::WriteToFlat(*str, buffer, start, write_length);
@@ -7436,9 +7437,8 @@ metrics::LongTaskStats metrics::LongTaskStats::Get(v8::Isolate* v8_isolate) {
 }
 
 namespace {
-i::Address* GetSerializedDataFromFixedArray(i::Isolate* i_isolate,
-                                            i::Tagged<i::FixedArray> list,
-                                            size_t index) {
+i::ValueHelper::InternalRepresentationType GetSerializedDataFromFixedArray(
+    i::Isolate* i_isolate, i::Tagged<i::FixedArray> list, size_t index) {
   if (index < static_cast<size_t>(list->length())) {
     int int_index = static_cast<int>(index);
     i::Tagged<i::Object> object = list->get(int_index);
@@ -7450,14 +7450,15 @@ i::Address* GetSerializedDataFromFixedArray(i::Isolate* i_isolate,
       int last = list->length() - 1;
       while (last >= 0 && list->is_the_hole(i_isolate, last)) last--;
       if (last != -1) list->RightTrim(i_isolate, last + 1);
-      return i::Handle<i::Object>(object, i_isolate).location();
+      return i::Handle<i::Object>(object, i_isolate).repr();
     }
   }
-  return nullptr;
+  return i::ValueHelper::kEmpty;
 }
 }  // anonymous namespace
 
-i::Address* Context::GetDataFromSnapshotOnce(size_t index) {
+i::ValueHelper::InternalRepresentationType Context::GetDataFromSnapshotOnce(
+    size_t index) {
   auto context = Utils::OpenHandle(this);
   i::Isolate* i_isolate = context->GetIsolate();
   auto list = i::Cast<i::FixedArray>(context->serialized_objects());
@@ -7642,7 +7643,8 @@ static_assert(v8::String::kMaxLength == i::String::kMaxLength);
   MaybeLocal<String> result;                                                  \
   if (length == 0) {                                                          \
     result = String::Empty(v8_isolate);                                       \
-  } else if (length > i::String::kMaxLength) {                                \
+  } else if (length > 0 &&                                                    \
+             static_cast<uint32_t>(length) > i::String::kMaxLength) {         \
     result = MaybeLocal<String>();                                            \
   } else {                                                                    \
     i::Isolate* i_isolate = reinterpret_cast<internal::Isolate*>(v8_isolate); \
@@ -8919,7 +8921,7 @@ CompiledWasmModule WasmModuleObject::GetCompiledModule() {
   auto obj = i::Cast<i::WasmModuleObject>(Utils::OpenDirectHandle(this));
   auto url = i::direct_handle(i::Cast<i::String>(obj->script()->name()),
                               obj->GetIsolate());
-  int length;
+  uint32_t length;
   std::unique_ptr<char[]> cstring =
       url->ToCString(i::DISALLOW_NULLS, i::FAST_STRING_TRAVERSAL, &length);
   return CompiledWasmModule(std::move(obj->shared_native_module()),
@@ -10112,7 +10114,8 @@ Isolate::SuppressMicrotaskExecutionScope::~SuppressMicrotaskExecutionScope() {
   i_isolate_->thread_local_top()->DecrementCallDepth(this);
 }
 
-i::Address* Isolate::GetDataFromSnapshotOnce(size_t index) {
+i::ValueHelper::InternalRepresentationType Isolate::GetDataFromSnapshotOnce(
+    size_t index) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
   auto list = i::Cast<i::FixedArray>(i_isolate->heap()->serialized_objects());
   return GetSerializedDataFromFixedArray(i_isolate, list, index);
@@ -10703,12 +10706,9 @@ void Isolate::InstallConditionalFeatures(Local<Context> context) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
   if (i_isolate->is_execution_terminating()) return;
   i_isolate->InstallConditionalFeatures(Utils::OpenHandle(*context));
+  if (i_isolate->has_exception()) return;
 #if V8_ENABLE_WEBASSEMBLY
-  if (i::v8_flags.expose_wasm && !i_isolate->has_exception()) {
-    i::WasmJs::InstallConditionalFeatures(i_isolate,
-                                          Utils::OpenHandle(*context));
-  }
-
+  i::WasmJs::InstallConditionalFeatures(i_isolate, Utils::OpenHandle(*context));
 #endif  // V8_ENABLE_WEBASSEMBLY
 }
 

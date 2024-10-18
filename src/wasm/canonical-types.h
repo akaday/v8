@@ -88,17 +88,17 @@ class TypeCanonicalizer {
 
   // Retrieve back a function signature from a canonical index later.
   V8_EXPORT_PRIVATE const CanonicalSig* LookupFunctionSignature(
-      uint32_t canonical_index) const;
+      CanonicalTypeIndex index) const;
 
   // Returns if {canonical_sub_index} is a canonical subtype of
   // {canonical_super_index}.
-  V8_EXPORT_PRIVATE bool IsCanonicalSubtype(uint32_t canonical_sub_index,
-                                            uint32_t canonical_super_index);
+  V8_EXPORT_PRIVATE bool IsCanonicalSubtype(CanonicalTypeIndex sub_index,
+                                            CanonicalTypeIndex super_index);
 
   // Returns if the type at {sub_index} in {sub_module} is a subtype of the
   // type at {super_index} in {super_module} after canonicalization.
-  V8_EXPORT_PRIVATE bool IsCanonicalSubtype(uint32_t sub_index,
-                                            uint32_t super_index,
+  V8_EXPORT_PRIVATE bool IsCanonicalSubtype(ModuleTypeIndex sub_index,
+                                            ModuleTypeIndex super_index,
                                             const WasmModule* sub_module,
                                             const WasmModule* super_module);
 
@@ -112,14 +112,14 @@ class TypeCanonicalizer {
 
   // Prepares wasm for the provided canonical type index. This reserves enough
   // space in the canonical rtts and the JSToWasm wrappers on the isolate roots.
-  V8_EXPORT_PRIVATE static void PrepareForCanonicalTypeId(Isolate* isolate,
-                                                          int id);
+  V8_EXPORT_PRIVATE static void PrepareForCanonicalTypeId(
+      Isolate* isolate, CanonicalTypeIndex id);
   // Reset the canonical rtts and JSToWasm wrappers on the isolate roots for
   // testing purposes (in production cases canonical type ids are never freed).
   V8_EXPORT_PRIVATE static void ClearWasmCanonicalTypesForTesting(
       Isolate* isolate);
 
-  bool IsFunctionSignature(uint32_t canonical_index) const;
+  bool IsFunctionSignature(CanonicalTypeIndex index) const;
 
 #if DEBUG
   // Check whether a function signature is canonicalized by checking whether the
@@ -257,7 +257,7 @@ class TypeCanonicalizer {
                                     TypeDefinition type,
                                     uint32_t recursive_group_start);
 
-  // An indexed type gets mapped to a {ValueType::CanonicalWithRelativeIndex}
+  // An indexed type gets mapped to a {CanonicalValueType::WithRelativeIndex}
   // if its index points inside the new canonical group; otherwise, the index
   // gets mapped to its canonical representative.
   CanonicalValueType CanonicalizeValueType(

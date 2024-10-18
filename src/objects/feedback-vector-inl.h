@@ -28,8 +28,6 @@ namespace v8::internal {
 
 TQ_OBJECT_CONSTRUCTORS_IMPL(FeedbackVector)
 OBJECT_CONSTRUCTORS_IMPL(FeedbackMetadata, HeapObject)
-OBJECT_CONSTRUCTORS_IMPL(ClosureFeedbackCellArray,
-                         ClosureFeedbackCellArray::Super)
 
 NEVER_READ_ONLY_SPACE_IMPL(FeedbackVector)
 NEVER_READ_ONLY_SPACE_IMPL(ClosureFeedbackCellArray)
@@ -185,7 +183,7 @@ void FeedbackVector::set_maybe_has_optimized_osr_code(bool value,
     CHECK(v8_flags.maglev_osr);
     set_osr_state(MaybeHasMaglevOsrCodeBit::update(osr_state(), value));
   } else {
-    CHECK_EQ(code_kind, CodeKind::TURBOFAN);
+    CHECK_EQ(code_kind, CodeKind::TURBOFAN_JS);
     set_osr_state(MaybeHasTurbofanOsrCodeBit::update(osr_state(), value));
   }
 }

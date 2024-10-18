@@ -59,9 +59,26 @@ void WriteBarrier::MarkingSlowFromTracedHandle(Tagged<HeapObject> value) {
 }
 
 // static
-void WriteBarrier::MarkingSlowFromCppHeapWrappable(Heap* heap, void* object) {
-  if (auto* cpp_heap = heap->cpp_heap()) {
-    CppHeap::From(cpp_heap)->WriteBarrier(object);
+void WriteBarrier::MarkingSlowFromCppHeapWrappable(Heap* heap,
+                                                   Tagged<JSObject> host,
+                                                   CppHeapPointerSlot slot,
+                                                   void* object) {
+  // Note: this is currently a combined barrier for marking both the
+  // CppHeapPointerTable entry and the referenced object (if any).
+
+#ifdef V8_ENABLE_SANDBOX
+  MarkingBarrier* marking_barrier = CurrentMarkingBarrier(host);
+  IsolateForPointerCompression isolate(marking_barrier->heap()->isolate());
+
+  CppHeapPointerTable& table = isolate.GetCppHeapPointerTable();
+  CppHeapPointerTable::Space* space = isolate.GetCppHeapPointerTableSpace();
+
+  ExternalPointerHandle handle = slot.Relaxed_LoadHandle();
+  table.Mark(space, handle, slot.address());
+#endif
+
+  if (heap->cpp_heap() && object) {
+    CppHeap::From(heap->cpp_heap())->WriteBarrier(object);
   }
 }
 
@@ -115,6 +132,23 @@ void WriteBarrier::MarkingSlow(Tagged<DescriptorArray> descriptor_array,
                                int number_of_own_descriptors) {
   MarkingBarrier* marking_barrier = CurrentMarkingBarrier(descriptor_array);
   marking_barrier->Write(descriptor_array, number_of_own_descriptors);
+}
+
+void WriteBarrier::MarkingSlow(Tagged<HeapObject> host,
+                               ExternalPointerSlot slot) {
+#ifdef V8_COMPRESS_POINTERS
+  if (!slot.HasExternalPointerHandle()) return;
+
+  MarkingBarrier* marking_barrier = CurrentMarkingBarrier(host);
+  IsolateForPointerCompression isolate(marking_barrier->heap()->isolate());
+
+  ExternalPointerTable& table = isolate.GetExternalPointerTableFor(slot.tag());
+  ExternalPointerTable::Space* space =
+      isolate.GetExternalPointerTableSpaceFor(slot.tag(), host.address());
+
+  ExternalPointerHandle handle = slot.Relaxed_LoadHandle();
+  table.Mark(space, handle, slot.address());
+#endif  // V8_COMPRESS_POINTERS
 }
 
 void WriteBarrier::MarkingSlow(Tagged<HeapObject> host,

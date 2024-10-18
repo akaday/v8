@@ -353,7 +353,7 @@ void Compiler::LogFunctionCompilation(Isolate* isolate,
     case CodeKind::MAGLEV:
       name = "maglev";
       break;
-    case CodeKind::TURBOFAN:
+    case CodeKind::TURBOFAN_JS:
       name = "turbofan";
       break;
     default:
@@ -1073,7 +1073,7 @@ bool PrepareJobWithHandleScope(OptimizedCompilationJob* job, Isolate* isolate,
 bool CompileTurbofan_NotConcurrent(Isolate* isolate,
                                    TurbofanCompilationJob* job) {
   OptimizedCompilationInfo* const compilation_info = job->compilation_info();
-  DCHECK_EQ(compilation_info->code_kind(), CodeKind::TURBOFAN);
+  DCHECK_EQ(compilation_info->code_kind(), CodeKind::TURBOFAN_JS);
 
   TimerEventScope<TimerEventRecompileSynchronous> timer(isolate);
   RCS_SCOPE(isolate, RuntimeCallCounterId::kOptimizeNonConcurrent);
@@ -1119,7 +1119,7 @@ bool CompileTurbofan_NotConcurrent(Isolate* isolate,
 bool CompileTurbofan_Concurrent(Isolate* isolate,
                                 std::unique_ptr<TurbofanCompilationJob> job) {
   OptimizedCompilationInfo* const compilation_info = job->compilation_info();
-  DCHECK_EQ(compilation_info->code_kind(), CodeKind::TURBOFAN);
+  DCHECK_EQ(compilation_info->code_kind(), CodeKind::TURBOFAN_JS);
   DirectHandle<JSFunction> function = compilation_info->closure();
 
   if (!isolate->optimizing_compile_dispatcher()->IsQueueAvailable()) {
@@ -1178,7 +1178,7 @@ bool ShouldOptimize(CodeKind code_kind,
                     DirectHandle<SharedFunctionInfo> shared) {
   DCHECK(CodeKindIsOptimizedJSFunction(code_kind));
   switch (code_kind) {
-    case CodeKind::TURBOFAN:
+    case CodeKind::TURBOFAN_JS:
       return v8_flags.turbofan && shared->PassesFilter(v8_flags.turbo_filter);
     case CodeKind::MAGLEV:
       return maglev::IsMaglevEnabled() &&
@@ -1385,7 +1385,7 @@ MaybeHandle<Code> GetOrCompileOptimized(
 
   DCHECK(shared->is_compiled());
 
-  if (code_kind == CodeKind::TURBOFAN) {
+  if (code_kind == CodeKind::TURBOFAN_JS) {
     return CompileTurbofan(isolate, function, shared, mode, osr_offset,
                            result_behavior);
   } else {
@@ -2716,9 +2716,9 @@ void BackgroundDeserializeTask::SourceTextAvailable(
     Isolate* isolate, Handle<String> source_text,
     const ScriptDetails& script_details) {
   DCHECK_EQ(isolate, isolate_for_local_isolate_);
-  CodeSerializer::NotifySourceTextAvailable(
-      isolate, off_thread_data_, &cached_data_, source_text, script_details,
-      &background_merge_task_);
+  LanguageMode language_mode = construct_language_mode(v8_flags.use_strict);
+  background_merge_task_.SetUpOnMainThread(isolate, source_text, script_details,
+                                           language_mode);
 }
 
 bool BackgroundDeserializeTask::ShouldMergeWithExistingScript() const {
@@ -2734,9 +2734,6 @@ void BackgroundDeserializeTask::MergeWithExistingScript() {
   UnparkedScope unparked_scope(&isolate);
   LocalHandleScope handle_scope(isolate.heap());
 
-  // TODO(leszeks): The merge is started here, but initialized and processed in
-  // the CodeSerializer static methods. Make the background merge control
-  // uniform in one or the other class.
   background_merge_task_.BeginMergeInBackground(
       &isolate, off_thread_data_.GetOnlyScript(isolate.heap()));
 }
@@ -3705,7 +3702,7 @@ class StressBackgroundCompileThread : public ParkingThread {
     }
 
    private:
-    int source_length_;
+    uint32_t source_length_;
     std::unique_ptr<char[]> source_buffer_;
     bool done_;
   };
@@ -4484,7 +4481,7 @@ void Compiler::PostInstantiation(Isolate* isolate,
         !function->HasAvailableOptimizedCode(isolate)) {
       CompilerTracer::TraceMarkForAlwaysOpt(isolate, function);
       JSFunction::EnsureFeedbackVector(isolate, function, is_compiled_scope);
-      function->MarkForOptimization(isolate, CodeKind::TURBOFAN,
+      function->MarkForOptimization(isolate, CodeKind::TURBOFAN_JS,
                                     ConcurrencyMode::kSynchronous);
     }
   }

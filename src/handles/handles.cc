@@ -28,6 +28,11 @@
 #include "src/execution/isolate-utils-inl.h"
 #endif
 
+#ifdef V8_ENABLE_DIRECT_HANDLE
+// For Isolate::Current() in indirect_handle.
+#include "src/execution/isolate-inl.h"
+#endif
+
 namespace v8 {
 namespace internal {
 
@@ -51,6 +56,26 @@ ASSERT_TRIVIALLY_COPYABLE(DirectHandle<Object>);
 ASSERT_TRIVIALLY_COPYABLE(MaybeDirectHandle<Object>);
 #endif
 
+// static
+Address* HandleBase::indirect_handle(Address object) {
+  return HandleScope::CreateHandle(Isolate::Current(), object);
+}
+
+// static
+Address* HandleBase::indirect_handle(Address object, Isolate* isolate) {
+  return HandleScope::CreateHandle(isolate, object);
+}
+
+// static
+Address* HandleBase::indirect_handle(Address object, LocalIsolate* isolate) {
+  return LocalHandleScope::GetHandle(isolate->heap(), object);
+}
+
+// static
+Address* HandleBase::indirect_handle(Address object, LocalHeap* local_heap) {
+  return LocalHandleScope::GetHandle(local_heap, object);
+}
+
 #endif  // V8_ENABLE_DIRECT_HANDLE
 
 #ifdef DEBUG
@@ -61,7 +86,7 @@ bool HandleBase::IsDereferenceAllowed() const {
   if (IsSmi(object)) return true;
   Tagged<HeapObject> heap_object = Cast<HeapObject>(object);
   if (HeapLayout::InReadOnlySpace(heap_object)) return true;
-  Isolate* isolate = Isolate::CurrentMaybeBackground();
+  Isolate* isolate = Isolate::Current();
   RootIndex root_index;
   if (isolate->roots_table().IsRootHandleLocation(location_, &root_index) &&
       RootsTable::IsImmortalImmovable(root_index)) {
@@ -110,7 +135,7 @@ bool DirectHandleBase::IsDereferenceAllowed() const {
   if (IsSmi(object)) return true;
   Tagged<HeapObject> heap_object = Cast<HeapObject>(object);
   if (HeapLayout::InReadOnlySpace(heap_object)) return true;
-  Isolate* isolate = Isolate::CurrentMaybeBackground();
+  Isolate* isolate = Isolate::Current();
   if (!AllowHandleDereference::IsAllowed()) return false;
 
   // Allocations in the shared heap may be dereferenced by multiple threads.

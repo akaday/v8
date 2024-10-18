@@ -16,15 +16,14 @@
 namespace v8 {
 namespace internal {
 
-OBJECT_CONSTRUCTORS_IMPL(DeoptimizationData, ProtectedFixedArray)
-
 DEFINE_DEOPT_ELEMENT_ACCESSORS(FrameTranslation, DeoptimizationFrameTranslation)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(InlinedFunctionCount, Smi)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(LiteralArray, DeoptimizationLiteralArray)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(OsrBytecodeOffset, Smi)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(OsrPcOffset, Smi)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(OptimizationId, Smi)
-DEFINE_DEOPT_ELEMENT_ACCESSORS(SharedFunctionInfoWrapper, Object)
+DEFINE_DEOPT_ELEMENT_ACCESSORS(SharedFunctionInfoWrapper,
+                               SharedFunctionInfoWrapperOrSmi)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(InliningPositions,
                                TrustedPodArray<InliningPosition>)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(DeoptExitStart, Smi)
@@ -38,7 +37,7 @@ DEFINE_DEOPT_ENTRY_ACCESSORS(Pc, Smi)
 DEFINE_DEOPT_ENTRY_ACCESSORS(NodeId, Smi)
 #endif  // DEBUG
 
-Tagged<Object> DeoptimizationData::SharedFunctionInfo() const {
+Tagged<SharedFunctionInfo> DeoptimizationData::GetSharedFunctionInfo() const {
   return Cast<i::SharedFunctionInfoWrapper>(SharedFunctionInfoWrapper())
       ->shared_info();
 }
@@ -56,13 +55,8 @@ int DeoptimizationData::DeoptCount() const {
   return (length() - kFirstDeoptEntryIndex) / kDeoptEntrySize;
 }
 
-inline DeoptimizationLiteralArray::DeoptimizationLiteralArray(Address ptr)
-    : TrustedWeakFixedArray(ptr) {
-  // No type check is possible beyond that for WeakFixedArray.
-}
-
 inline Tagged<Object> DeoptimizationLiteralArray::get(int index) const {
-  return get(GetPtrComprCageBase(*this), index);
+  return get(GetPtrComprCageBase(), index);
 }
 
 inline Tagged<Object> DeoptimizationLiteralArray::get(

@@ -109,8 +109,8 @@ void DeoptimizationFrameTranslationPrintSingleOpcode(
     }
 
     case TranslationOpcode::BUILTIN_CONTINUATION_FRAME:
-    case TranslationOpcode::JAVA_SCRIPT_BUILTIN_CONTINUATION_FRAME:
-    case TranslationOpcode::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME: {
+    case TranslationOpcode::JAVASCRIPT_BUILTIN_CONTINUATION_FRAME:
+    case TranslationOpcode::JAVASCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME: {
       DCHECK_EQ(TranslationOpcodeOperandCount(opcode), 3);
       int bailout_id = iterator.NextOperand();
       int shared_info_id = iterator.NextOperand();
@@ -818,7 +818,7 @@ void TranslatedValue::Handlify() {
   }
 }
 
-TranslatedFrame TranslatedFrame::UnoptimizedFrame(
+TranslatedFrame TranslatedFrame::UnoptimizedJSFrame(
     BytecodeOffset bytecode_offset, Tagged<SharedFunctionInfo> shared_info,
     int height, int return_value_offset, int return_value_count) {
   TranslatedFrame frame(kUnoptimizedFunction, shared_info, height,
@@ -1020,9 +1020,9 @@ TranslatedFrame TranslatedState::CreateNextTranslatedFrame(
                bytecode_offset.ToInt(), arg_count, height, return_value_offset,
                return_value_count);
       }
-      return TranslatedFrame::UnoptimizedFrame(bytecode_offset, shared_info,
-                                               height, return_value_offset,
-                                               return_value_count);
+      return TranslatedFrame::UnoptimizedJSFrame(bytecode_offset, shared_info,
+                                                 height, return_value_offset,
+                                                 return_value_count);
     }
 
     case TranslationOpcode::INLINED_EXTRA_ARGUMENTS: {
@@ -1133,7 +1133,7 @@ TranslatedFrame TranslatedState::CreateNextTranslatedFrame(
     }
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-    case TranslationOpcode::JAVA_SCRIPT_BUILTIN_CONTINUATION_FRAME: {
+    case TranslationOpcode::JAVASCRIPT_BUILTIN_CONTINUATION_FRAME: {
       BytecodeOffset bytecode_offset = BytecodeOffset(iterator->NextOperand());
       Tagged<SharedFunctionInfo> shared_info = Cast<SharedFunctionInfo>(
           literal_array.get_on_heap_literals()->get(iterator->NextOperand()));
@@ -1149,7 +1149,7 @@ TranslatedFrame TranslatedState::CreateNextTranslatedFrame(
           bytecode_offset, shared_info, height);
     }
 
-    case TranslationOpcode::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME: {
+    case TranslationOpcode::JAVASCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME: {
       BytecodeOffset bytecode_offset = BytecodeOffset(iterator->NextOperand());
       Tagged<SharedFunctionInfo> shared_info = Cast<SharedFunctionInfo>(
           literal_array.get_on_heap_literals()->get(iterator->NextOperand()));
@@ -1239,7 +1239,8 @@ void TranslatedState::CreateArgumentsElementsTranslatedValues(
 
   object_positions_.push_back({frame_index, value_index});
   frame.Add(TranslatedValue::NewDeferredObject(
-      this, length + FixedArray::kHeaderSize / kTaggedSize, object_index));
+      this, length + OFFSET_OF_DATA_START(FixedArray) / kTaggedSize,
+      object_index));
 
   ReadOnlyRoots roots(isolate_);
   frame.Add(TranslatedValue::NewTagged(this, roots.fixed_array_map()));
@@ -1300,8 +1301,8 @@ int TranslatedState::CreateNextTranslatedValue(
     case TranslationOpcode::INLINED_EXTRA_ARGUMENTS:
     case TranslationOpcode::CONSTRUCT_CREATE_STUB_FRAME:
     case TranslationOpcode::CONSTRUCT_INVOKE_STUB_FRAME:
-    case TranslationOpcode::JAVA_SCRIPT_BUILTIN_CONTINUATION_FRAME:
-    case TranslationOpcode::JAVA_SCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME:
+    case TranslationOpcode::JAVASCRIPT_BUILTIN_CONTINUATION_FRAME:
+    case TranslationOpcode::JAVASCRIPT_BUILTIN_CONTINUATION_WITH_CATCH_FRAME:
     case TranslationOpcode::BUILTIN_CONTINUATION_FRAME:
 #if V8_ENABLE_WEBASSEMBLY
     case TranslationOpcode::WASM_INLINED_INTO_JS_FRAME:
@@ -1577,8 +1578,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::TAGGED_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       intptr_t value = *(reinterpret_cast<intptr_t*>(fp + slot_offset));
       Address uncompressed_value = DecompressIfNeeded(value);
       if (trace_file != nullptr) {
@@ -1594,8 +1595,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::INT32_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       uint32_t value = GetUInt32Slot(fp, slot_offset);
       if (trace_file != nullptr) {
         PrintF(trace_file, "%d ; (int32) [fp %c %3d] ",
@@ -1608,8 +1609,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::INT64_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       uint64_t value = GetUInt64Slot(fp, slot_offset);
       if (trace_file != nullptr) {
         PrintF(trace_file, "%" V8PRIdPTR " ; (int64) [fp %c %3d] ",
@@ -1622,8 +1623,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::SIGNED_BIGINT64_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       uint64_t value = GetUInt64Slot(fp, slot_offset);
       if (trace_file != nullptr) {
         PrintF(trace_file, "%" V8PRIdPTR " ; (signed bigint64) [fp %c %3d] ",
@@ -1637,8 +1638,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::UNSIGNED_BIGINT64_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       uint64_t value = GetUInt64Slot(fp, slot_offset);
       if (trace_file != nullptr) {
         PrintF(trace_file, "%" V8PRIdPTR " ; (unsigned bigint64) [fp %c %3d] ",
@@ -1652,8 +1653,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::UINT32_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       uint32_t value = GetUInt32Slot(fp, slot_offset);
       if (trace_file != nullptr) {
         PrintF(trace_file, "%u ; (uint32) [fp %c %3d] ", value,
@@ -1666,8 +1667,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::BOOL_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       uint32_t value = GetUInt32Slot(fp, slot_offset);
       if (trace_file != nullptr) {
         PrintF(trace_file, "%u ; (bool) [fp %c %3d] ", value,
@@ -1679,8 +1680,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::FLOAT_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       Float32 value = GetFloatSlot(fp, slot_offset);
       if (trace_file != nullptr) {
         PrintF(trace_file, "%e ; (float) [fp %c %3d] ", value.get_scalar(),
@@ -1692,8 +1693,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::DOUBLE_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       Float64 value = GetDoubleSlot(fp, slot_offset);
       if (trace_file != nullptr) {
         PrintF(trace_file, "%e ; (double) [fp %c %d] ", value.get_scalar(),
@@ -1706,8 +1707,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::SIMD128_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       Simd128 value = getSimd128Slot(fp, slot_offset);
       if (trace_file != nullptr) {
         int8x16 val = value.to_i8x16();
@@ -1726,8 +1727,8 @@ int TranslatedState::CreateNextTranslatedValue(
     }
 
     case TranslationOpcode::HOLEY_DOUBLE_STACK_SLOT: {
-      int slot_offset =
-          OptimizedFrame::StackSlotOffsetRelativeToFp(iterator->NextOperand());
+      int slot_offset = OptimizedJSFrame::StackSlotOffsetRelativeToFp(
+          iterator->NextOperand());
       Float64 value = GetDoubleSlot(fp, slot_offset);
       if (trace_file != nullptr) {
         if (value.is_hole_nan()) {
@@ -1822,7 +1823,7 @@ TranslatedState::TranslatedState(const JavaScriptFrame* frame)
   int deopt_index = SafepointEntry::kNoDeoptIndex;
   Tagged<Code> code = frame->LookupCode();
   Tagged<DeoptimizationData> data =
-      static_cast<const OptimizedFrame*>(frame)->GetDeoptimizationData(
+      static_cast<const OptimizedJSFrame*>(frame)->GetDeoptimizationData(
           code, &deopt_index);
   DCHECK(!data.is_null() && deopt_index != SafepointEntry::kNoDeoptIndex);
   DeoptimizationFrameTranslation::Iterator it(
@@ -2350,8 +2351,9 @@ void TranslatedState::EnsureJSObjectAllocated(TranslatedValue* slot,
     Representation representation = descriptors->GetDetails(i).representation();
     if (index.is_inobject() &&
         (representation.IsDouble() || representation.IsHeapObject())) {
-      CHECK_GE(index.index(), FixedArray::kHeaderSize / kTaggedSize);
-      int array_index = index.index() * kTaggedSize - FixedArray::kHeaderSize;
+      CHECK_GE(index.index(), OFFSET_OF_DATA_START(FixedArray) / kTaggedSize);
+      int array_index =
+          index.index() * kTaggedSize - OFFSET_OF_DATA_START(FixedArray);
       raw_object_storage->set(array_index, kStoreHeapObject);
     }
   }

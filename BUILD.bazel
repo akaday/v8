@@ -68,6 +68,7 @@ load(":bazel/v8-non-pointer-compression.bzl", "v8_binary_non_pointer_compression
 # v8_control_flow_integrity
 # v8_enable_sandbox
 # cppgc_enable_caged_heap
+# cppgc_enable_api_checks
 # cppgc_enable_check_assignments_in_prefinalizers
 # cppgc_enable_slim_write_barrier
 # cppgc_enable_object_names
@@ -473,6 +474,7 @@ v8_config(
         "V8_ENABLE_SPARKPLUG",
         "V8_ENABLE_EXTENSIBLE_RO_SNAPSHOT",
         "V8_ENABLE_CONTINUATION_PRESERVED_EMBEDDER_DATA",
+        "V8_TLS_USED_IN_LIBRARY",
     ] + select({
         "@v8//bazel/config:is_debug": [
             "DEBUG",
@@ -1459,6 +1461,7 @@ filegroup(
         "src/common/ptr-compr.cc",
         "src/common/ptr-compr.h",
         "src/common/ptr-compr-inl.h",
+        "src/common/thread-local-storage.h",
         "src/common/segmented-table.h",
         "src/common/segmented-table-inl.h",
         "src/common/simd128.h",

@@ -2516,7 +2516,7 @@ Heap::LimitsCompuatationResult Heap::ComputeNewAllocationLimits(Heap* heap) {
 #endif
   const HeapGrowingMode mode = heap->CurrentHeapGrowingMode();
   double v8_gc_speed =
-      heap->tracer()->CombinedMarkCompactSpeedInBytesPerMillisecond();
+      heap->tracer()->OldGenerationSpeedInBytesPerMillisecond();
   double v8_mutator_speed =
       heap->tracer()
           ->CurrentOldGenerationAllocationThroughputInBytesPerMillisecond();
@@ -3470,9 +3470,9 @@ Tagged<FixedArrayBase> Heap::LeftTrimFixedArray(Tagged<FixedArrayBase> object,
   DCHECK(!IsLargeObject(object));
   DCHECK(object->map() != ReadOnlyRoots(this).fixed_cow_array_map());
 
-  static_assert(FixedArrayBase::kMapOffset == 0);
-  static_assert(FixedArrayBase::kLengthOffset == kTaggedSize);
-  static_assert(FixedArrayBase::kHeaderSize == 2 * kTaggedSize);
+  static_assert(offsetof(FixedArrayBase, map_) == 0);
+  static_assert(offsetof(FixedArrayBase, length_) == kTaggedSize);
+  static_assert(sizeof(FixedArrayBase) == 2 * kTaggedSize);
 
   const int len = object->length();
   DCHECK(elements_to_trim <= len);
@@ -3546,8 +3546,7 @@ void Heap::RightTrimArray(Tagged<Array> object, int new_capacity,
     DCHECK_EQ(gc_state(), MARK_COMPACT);
   }
 
-  const int bytes_to_trim =
-      (old_capacity - new_capacity) * Array::Shape::kElementSize;
+  const int bytes_to_trim = (old_capacity - new_capacity) * Array::kElementSize;
 
   // Calculate location of new array end.
   const int old_size = Array::SizeFor(old_capacity);
@@ -3771,7 +3770,7 @@ bool Heap::HasLowOldGenerationAllocationRate() {
   double mu = ComputeMutatorUtilization(
       "Old generation",
       tracer()->OldGenerationAllocationThroughputInBytesPerMillisecond(),
-      tracer()->CombinedMarkCompactSpeedInBytesPerMillisecond());
+      tracer()->OldGenerationSpeedInBytesPerMillisecond());
   const double kHighMutatorUtilization = 0.993;
   return mu > kHighMutatorUtilization;
 }

@@ -2636,16 +2636,69 @@ compiler::OptionalHeapObjectRef MaglevGraphBuilder::TryGetConstant(
 
 template <Operation kOperation>
 bool MaglevGraphBuilder::TryReduceCompareEqualAgainstConstant() {
-  // First handle strict equal comparison with constant.
-  if (kOperation != Operation::kStrictEqual) return false;
+  if (kOperation != Operation::kStrictEqual && kOperation != Operation::kEqual)
+    return false;
+
   ValueNode* left = LoadRegister(0);
   ValueNode* right = GetAccumulator();
 
+  ValueNode* other = right;
   compiler::OptionalHeapObjectRef maybe_constant = TryGetConstant(left);
-  if (!maybe_constant) maybe_constant = TryGetConstant(right);
+  if (!maybe_constant) {
+    maybe_constant = TryGetConstant(right);
+    other = left;
+  }
   if (!maybe_constant) return false;
-  InstanceType type = maybe_constant.value().map(broker()).instance_type();
 
+  if (CheckType(other, NodeType::kBoolean)) {
+    std::optional<bool> compare_bool = {};
+    if (maybe_constant.equals(broker_->true_value())) {
+      compare_bool = {true};
+    } else if (maybe_constant.equals(broker_->false_value())) {
+      compare_bool = {false};
+    } else if (kOperation == Operation::kEqual) {
+      // For `bool == num` we can convert the actual comparison `ToNumber(bool)
+      // == num` into `(num == 1) ? bool : ((num == 0) ? !bool : false)`,
+      std::optional<double> val = {};
+      if (maybe_constant.value().IsSmi()) {
+        val = maybe_constant.value().AsSmi();
+      } else if (maybe_constant.value().IsHeapNumber()) {
+        val = maybe_constant.value().AsHeapNumber().value();
+      }
+      if (val) {
+        if (*val == 0) {
+          compare_bool = {false};
+        } else if (*val == 1) {
+          compare_bool = {true};
+        } else {
+          // The constant number is neither equal to `ToNumber(true)` nor
+          // `ToNumber(false)`.
+          SetAccumulator(GetBooleanConstant(false));
+          return true;
+        }
+      }
+    }
+    if (compare_bool) {
+      if (*compare_bool) {
+        SetAccumulator(other);
+      } else {
+        compiler::OptionalHeapObjectRef both_constant = TryGetConstant(other);
+        if (both_constant) {
+          DCHECK(both_constant.equals(broker_->true_value()) ||
+                 both_constant.equals(broker_->false_value()));
+          SetAccumulator(GetBooleanConstant(
+              *compare_bool == both_constant.equals(broker_->true_value())));
+        } else {
+          SetAccumulator(AddNewNode<LogicalNot>({other}));
+        }
+      }
+      return true;
+    }
+  }
+
+  if (kOperation != Operation::kStrictEqual) return false;
+
+  InstanceType type = maybe_constant.value().map(broker()).instance_type();
   if (!InstanceTypeChecker::IsReferenceComparable(type)) return false;
 
   // If the constant is the undefined value, we can compare it
@@ -2678,6 +2731,8 @@ bool MaglevGraphBuilder::TryReduceCompareEqualAgainstConstant() {
 
 template <Operation kOperation>
 void MaglevGraphBuilder::VisitCompareOperation() {
+  if (TryReduceCompareEqualAgainstConstant<kOperation>()) return;
+
   // Compare opcodes are not always commutative. We sort the ones which are for
   // better CSE coverage.
   auto SortCommute = [](ValueNode*& left, ValueNode*& right) {
@@ -2690,6 +2745,46 @@ void MaglevGraphBuilder::VisitCompareOperation() {
       std::swap(left, right);
     }
   };
+
+  auto TryConstantFoldInt32 = [&](ValueNode* left, ValueNode* right) {
+    if (left->Is<Int32Constant>() && right->Is<Int32Constant>()) {
+      int left_value = left->Cast<Int32Constant>()->value();
+      int right_value = right->Cast<Int32Constant>()->value();
+      SetAccumulator(GetBooleanConstant(
+          OperationValue<kOperation>(left_value, right_value)));
+      return true;
+    }
+    return false;
+  };
+
+  auto TryConstantFoldEqual = [&](ValueNode* left, ValueNode* right) {
+    if (left == right) {
+      SetAccumulator(
+          GetBooleanConstant(kOperation == Operation::kEqual ||
+                             kOperation == Operation::kStrictEqual ||
+                             kOperation == Operation::kLessThanOrEqual ||
+                             kOperation == Operation::kGreaterThanOrEqual));
+      return true;
+    }
+    return false;
+  };
+
+  auto MaybeOddballs = [&]() {
+    auto MaybeOddball = [&](ValueNode* value) {
+      ValueRepresentation rep = value->value_representation();
+      switch (rep) {
+        case ValueRepresentation::kInt32:
+        case ValueRepresentation::kUint32:
+        case ValueRepresentation::kFloat64:
+          return false;
+        default:
+          break;
+      }
+      return !CheckType(value, NodeType::kNumber);
+    };
+    return MaybeOddball(LoadRegister(0)) || MaybeOddball(GetAccumulator());
+  };
+
   FeedbackNexus nexus = FeedbackNexusForOperand(1);
   switch (nexus.GetCompareOperationFeedback()) {
     case CompareOperationHint::kNone:
@@ -2701,43 +2796,43 @@ void MaglevGraphBuilder::VisitCompareOperation() {
       // constants in different representations.
       ValueNode* left = GetInt32(LoadRegister(0));
       ValueNode* right = GetInt32(GetAccumulator());
-      if (left == right) {
-        SetAccumulator(
-            GetBooleanConstant(kOperation == Operation::kEqual ||
-                               kOperation == Operation::kStrictEqual ||
-                               kOperation == Operation::kLessThanOrEqual ||
-                               kOperation == Operation::kGreaterThanOrEqual));
-        return;
-      }
-      if (left->Is<Int32Constant>() && right->Is<Int32Constant>()) {
-        int left_value = left->Cast<Int32Constant>()->value();
-        int right_value = right->Cast<Int32Constant>()->value();
-        SetAccumulator(GetBooleanConstant(
-            OperationValue<kOperation>(left_value, right_value)));
-        return;
-      }
+      if (TryConstantFoldEqual(left, right)) return;
+      if (TryConstantFoldInt32(left, right)) return;
       SortCommute(left, right);
       SetAccumulator(AddNewNode<Int32Compare>({left, right}, kOperation));
       return;
     }
+    case CompareOperationHint::kNumberOrOddball:
+      // TODO(leszeks): we could support all kNumberOrOddball with
+      // BranchIfFloat64Compare, but we'd need to special case comparing
+      // oddballs with NaN value (e.g. undefined) against themselves.
+      if (MaybeOddballs()) {
+        break;
+      }
+      [[fallthrough]];
     case CompareOperationHint::kNumberOrBoolean:
-      if (kOperation != Operation::kEqual) {
-        if (TryReduceCompareEqualAgainstConstant<kOperation>()) return;
+      if (kOperation == Operation::kStrictEqual && MaybeOddballs()) {
         break;
       }
       [[fallthrough]];
     case CompareOperationHint::kNumber: {
-      // TODO(leszeks): we could support kNumberOrOddball with
-      // BranchIfFloat64Compare, but we'd need to special case comparing
-      // oddballs with NaN value (e.g. undefined) against themselves.
+      ValueNode* left = LoadRegister(0);
+      ValueNode* right = GetAccumulator();
+      if (left->value_representation() == ValueRepresentation::kInt32 &&
+          right->value_representation() == ValueRepresentation::kInt32) {
+        if (TryConstantFoldEqual(left, right)) return;
+        if (TryConstantFoldInt32(left, right)) return;
+        SortCommute(left, right);
+        SetAccumulator(AddNewNode<Int32Compare>({left, right}, kOperation));
+        return;
+      }
       ToNumberHint to_number_hint =
           nexus.GetCompareOperationFeedback() ==
                   CompareOperationHint::kNumberOrBoolean
               ? ToNumberHint::kAssumeNumberOrBoolean
               : ToNumberHint::kDisallowToNumber;
-      ValueNode* left = GetFloat64ForToNumber(LoadRegister(0), to_number_hint);
-      ValueNode* right =
-          GetFloat64ForToNumber(GetAccumulator(), to_number_hint);
+      left = GetFloat64ForToNumber(left, to_number_hint);
+      right = GetFloat64ForToNumber(right, to_number_hint);
       if (left->Is<Float64Constant>() && right->Is<Float64Constant>()) {
         double left_value = left->Cast<Float64Constant>()->value().get_scalar();
         double right_value =
@@ -2762,6 +2857,7 @@ void MaglevGraphBuilder::VisitCompareOperation() {
       left = GetInternalizedString(iterator_.GetRegisterOperand(0));
       right =
           GetInternalizedString(interpreter::Register::virtual_accumulator());
+      if (TryConstantFoldEqual(left, right)) return;
       SetAccumulator(BuildTaggedEqual(left, right));
       return;
     }
@@ -2773,26 +2869,18 @@ void MaglevGraphBuilder::VisitCompareOperation() {
       ValueNode* right = GetAccumulator();
       BuildCheckSymbol(left);
       BuildCheckSymbol(right);
+      if (TryConstantFoldEqual(left, right)) return;
       SetAccumulator(BuildTaggedEqual(left, right));
       return;
     }
     case CompareOperationHint::kString: {
-      if (TryReduceCompareEqualAgainstConstant<kOperation>()) return;
-
       ValueNode* left = LoadRegister(0);
       ValueNode* right = GetAccumulator();
       BuildCheckString(left);
       BuildCheckString(right);
 
       ValueNode* result;
-      if (left == right) {
-        SetAccumulator(
-            GetBooleanConstant(kOperation == Operation::kEqual ||
-                               kOperation == Operation::kStrictEqual ||
-                               kOperation == Operation::kLessThanOrEqual ||
-                               kOperation == Operation::kGreaterThanOrEqual));
-        return;
-      }
+      if (TryConstantFoldEqual(left, right)) return;
       ValueNode* tagged_left = GetTaggedValue(left);
       ValueNode* tagged_right = GetTaggedValue(right);
       switch (kOperation) {
@@ -2824,12 +2912,9 @@ void MaglevGraphBuilder::VisitCompareOperation() {
     case CompareOperationHint::kAny:
     case CompareOperationHint::kBigInt64:
     case CompareOperationHint::kBigInt:
-    case CompareOperationHint::kNumberOrOddball:
     case CompareOperationHint::kReceiverOrNullOrUndefined:
-      if (TryReduceCompareEqualAgainstConstant<kOperation>()) return;
       break;
     case CompareOperationHint::kReceiver: {
-      if (TryReduceCompareEqualAgainstConstant<kOperation>()) return;
       DCHECK(kOperation == Operation::kEqual ||
              kOperation == Operation::kStrictEqual);
 
@@ -4545,7 +4630,7 @@ ValueNode* MaglevGraphBuilder::BuildLoadFixedArrayElement(ValueNode* elements,
         GetObjectFromAllocation(elements->Cast<InlinedAllocation>());
     CHECK_EQ(vobject->type(), VirtualObject::kDefault);
     DCHECK(vobject->map().IsFixedArrayMap());
-    ValueNode* length_node = vobject->get(FixedArray::kLengthOffset);
+    ValueNode* length_node = vobject->get(offsetof(FixedArray, length_));
     if (auto length = TryGetInt32Constant(length_node)) {
       if (index >= 0 && index < length.value()) {
         return vobject->get(FixedArray::OffsetOfElementAt(index));
@@ -4831,7 +4916,7 @@ ValueNode* MaglevGraphBuilder::BuildLoadField(
 ValueNode* MaglevGraphBuilder::BuildLoadFixedArrayLength(
     ValueNode* fixed_array) {
   ValueNode* length =
-      BuildLoadTaggedField(fixed_array, FixedArray::kLengthOffset);
+      BuildLoadTaggedField(fixed_array, offsetof(FixedArray, length_));
   EnsureType(length, NodeType::kSmi);
   return length;
 }
@@ -7955,7 +8040,7 @@ ReduceResult MaglevGraphBuilder::TryReduceStringPrototypeCharCodeAt(
     if (cst->IsString() && index->Is<Int32Constant>()) {
       compiler::StringRef str = cst->AsString();
       int idx = index->Cast<Int32Constant>()->value();
-      if (idx >= 0 && idx < str.length()) {
+      if (idx >= 0 && static_cast<uint32_t>(idx) < str.length()) {
         if (std::optional<uint16_t> value = str.GetChar(broker(), idx)) {
           return GetSmiConstant(*value);
         }
@@ -9669,9 +9754,10 @@ ReduceResult MaglevGraphBuilder::ReduceCallWithArrayLikeForArgumentsObject(
   for (int i = 0; i < static_cast<int>(args.count()); i++) {
     arg_list.push_back(args[i]);
   }
-  DCHECK(elements->get(FixedArray::kLengthOffset)->Is<Int32Constant>());
-  int length =
-      elements->get(FixedArray::kLengthOffset)->Cast<Int32Constant>()->value();
+  DCHECK(elements->get(offsetof(FixedArray, length_))->Is<Int32Constant>());
+  int length = elements->get(offsetof(FixedArray, length_))
+                   ->Cast<Int32Constant>()
+                   ->value();
   for (int i = 0; i < length; i++) {
     arg_list.push_back(elements->get(FixedArray::OffsetOfElementAt(i)));
   }
@@ -11497,8 +11583,8 @@ VirtualObject* MaglevGraphBuilder::CreateFixedArray(compiler::MapRef map,
                                                     int length) {
   int slot_count = FixedArray::SizeFor(length) / kTaggedSize;
   VirtualObject* array = CreateVirtualObject(map, slot_count);
-  array->set(FixedArray::kLengthOffset, GetInt32Constant(length));
-  array->ClearSlots(FixedArray::kLengthOffset,
+  array->set(offsetof(FixedArray, length_), GetInt32Constant(length));
+  array->ClearSlots(offsetof(FixedArray, length_),
                     GetRootConstant(RootIndex::kOnePointerFillerMap));
   return array;
 }
@@ -11551,10 +11637,11 @@ VirtualObject* MaglevGraphBuilder::CreateMappedArgumentsElements(
     ValueNode* unmapped_elements) {
   int slot_count = SloppyArgumentsElements::SizeFor(mapped_count) / kTaggedSize;
   VirtualObject* elements = CreateVirtualObject(map, slot_count);
-  elements->set(SloppyArgumentsElements::kLengthOffset,
+  elements->set(offsetof(SloppyArgumentsElements, length_),
                 GetInt32Constant(mapped_count));
-  elements->set(SloppyArgumentsElements::kContextOffset, context);
-  elements->set(SloppyArgumentsElements::kArgumentsOffset, unmapped_elements);
+  elements->set(offsetof(SloppyArgumentsElements, context_), context);
+  elements->set(offsetof(SloppyArgumentsElements, arguments_),
+                unmapped_elements);
   return elements;
 }
 
@@ -11848,9 +11935,8 @@ VirtualObject* MaglevGraphBuilder::BuildVirtualArgumentsObject() {
               broker()->sloppy_arguments_elements_map(), mapped_count,
               GetContext(), unmapped_elements);
           for (int i = 0; i < mapped_count; i++, param_idx_in_ctxt--) {
-            elements->set(
-                SloppyArgumentsElements::kMappedEntriesOffset + i * kTaggedSize,
-                GetInt32Constant(param_idx_in_ctxt));
+            elements->set(SloppyArgumentsElements::OffsetOfElementAt(i),
+                          GetInt32Constant(param_idx_in_ctxt));
           }
           return CreateArgumentsObject(
               broker()->target_native_context().fast_aliased_arguments_map(
@@ -11874,9 +11960,7 @@ VirtualObject* MaglevGraphBuilder::BuildVirtualArgumentsObject() {
                 },
                 [&] { return GetSmiConstant(param_idx_in_ctxt); },
                 [&] { return the_hole_value; });
-            elements->set(
-                SloppyArgumentsElements::kMappedEntriesOffset + i * kTaggedSize,
-                value);
+            elements->set(SloppyArgumentsElements::OffsetOfElementAt(i), value);
           }
           return CreateArgumentsObject(
               broker()->target_native_context().fast_aliased_arguments_map(

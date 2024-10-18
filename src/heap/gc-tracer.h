@@ -275,9 +275,6 @@ class V8_EXPORT_PRIVATE GCTracer {
       base::TimeDelta::FromSeconds(5);
   static constexpr double kConservativeSpeedInBytesPerMillisecond = 128 * KB;
 
-  static double CombineSpeedsInBytesPerMillisecond(double default_speed,
-                                                   double optional_speed);
-
 #ifdef V8_RUNTIME_CALL_STATS
   V8_INLINE static RuntimeCallCounterId RCSCounterFromScope(Scope::ScopeId id);
 #endif  // defined(V8_RUNTIME_CALL_STATS)
@@ -382,9 +379,9 @@ class V8_EXPORT_PRIVATE GCTracer {
   // Returns 0 if no events have been recorded.
   double FinalIncrementalMarkCompactSpeedInBytesPerMillisecond() const;
 
-  // Compute the overall mark compact speed including incremental steps
-  // and the final mark-compact step.
-  double CombinedMarkCompactSpeedInBytesPerMillisecond();
+  // Compute the overall old generation mark compact speed including incremental
+  // steps and the final mark-compact step.
+  double OldGenerationSpeedInBytesPerMillisecond();
 
   // Allocation throughput in the new space in bytes/millisecond.
   // Returns 0 if no allocation events have been recorded.
@@ -453,7 +450,7 @@ class V8_EXPORT_PRIVATE GCTracer {
 
   void RecordGCPhasesHistograms(RecordGCPhasesInfo::Mode mode);
 
-  void RecordEmbedderSpeed(size_t bytes, double duration);
+  void RecordEmbedderMarkingSpeed(size_t bytes, base::TimeDelta duration);
 
   // Returns the average time between scheduling and invocation of an
   // incremental marking task.
@@ -538,8 +535,6 @@ class V8_EXPORT_PRIVATE GCTracer {
 
   std::optional<base::TimeDelta> average_time_to_incremental_marking_task_;
 
-  double recorded_embedder_speed_ = 0.0;
-
   // This is not the general last marking start time as it's only updated when
   // we reach the minimum threshold for code flushing which is 1 sec.
   std::optional<base::TimeTicks> last_marking_start_time_for_code_flushing_;
@@ -567,10 +562,11 @@ class V8_EXPORT_PRIVATE GCTracer {
   base::TimeTicks previous_mark_compact_end_time_;
   base::TimeDelta total_duration_since_last_mark_compact_;
 
-  BytesAndDurationBuffer recorded_minor_gcs_total_;
   BytesAndDurationBuffer recorded_compactions_;
   BytesAndDurationBuffer recorded_incremental_mark_compacts_;
   BytesAndDurationBuffer recorded_mark_compacts_;
+  BytesAndDurationBuffer recorded_major_totals_;
+  BytesAndDurationBuffer recorded_embedder_marking_;
   BytesAndDurationBuffer recorded_new_generation_allocations_;
   BytesAndDurationBuffer recorded_old_generation_allocations_;
   BytesAndDurationBuffer recorded_embedder_generation_allocations_;

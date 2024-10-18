@@ -375,22 +375,19 @@ v8::Platform* g_default_platform;
 std::unique_ptr<v8::Platform> g_platform;
 
 template <int N>
-bool ThrowError(Isolate* isolate, const char (&message)[N]) {
-  if (isolate->IsExecutionTerminating()) return false;
+void ThrowError(Isolate* isolate, const char (&message)[N]) {
+  if (isolate->IsExecutionTerminating()) return;
   isolate->ThrowError(message);
-  return true;
 }
 
-bool ThrowError(Isolate* isolate, Local<String> message) {
-  if (isolate->IsExecutionTerminating()) return false;
+void ThrowError(Isolate* isolate, Local<String> message) {
+  if (isolate->IsExecutionTerminating()) return;
   isolate->ThrowError(message);
-  return true;
 }
 
-bool ThrowException(Isolate* isolate, Local<Value> exception) {
-  if (isolate->IsExecutionTerminating()) return false;
+void ThrowException(Isolate* isolate, Local<Value> exception) {
+  if (isolate->IsExecutionTerminating()) return;
   isolate->ThrowException(exception);
-  return true;
 }
 
 static MaybeLocal<Value> TryGetValue(v8::Isolate* isolate,
@@ -603,7 +600,7 @@ class DummySourceStream : public v8::ScriptCompiler::ExternalSourceStream {
   }
 
  private:
-  int source_length_;
+  uint32_t source_length_;
   std::unique_ptr<char[]> source_buffer_;
   bool done_;
 };
@@ -923,6 +920,7 @@ bool Shell::ExecuteString(Isolate* isolate, Local<String> source,
                           ReportExceptions report_exceptions,
                           Global<Value>* out_result) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  if (i_isolate->is_execution_terminating()) return true;
   if (i::v8_flags.parse_only) {
     i::VMState<PARSER> state(i_isolate);
     i::Handle<i::String> str = Utils::OpenHandle(*(source));
@@ -1024,6 +1022,7 @@ bool Shell::ExecuteString(Isolate* isolate, Local<String> source,
 
   Local<Value> result;
   if (!maybe_result.ToLocal(&result)) {
+    if (try_catch.HasTerminated()) return true;
     DCHECK(try_catch.HasCaught());
     return false;
   } else if (out_result != nullptr) {
@@ -5185,6 +5184,11 @@ void Worker::ProcessMessage(std::unique_ptr<SerializationData> data) {
     MaybeLocal<Value> result = onmessage_fun->Call(context, global, 1, argv);
     USE(result);
   }
+  if (isolate_->IsExecutionTerminating()) {
+    // Re-schedule an interrupt in case the worker is going to run more code
+    // and never return to the event queue.
+    isolate_->TerminateExecution();
+  }
 }
 
 void Worker::ProcessMessages() {
@@ -5829,7 +5833,7 @@ bool Shell::RunMainIsolate(v8::Isolate* isolate, bool keep_context_alive) {
       // testcase sent by Fuzzilli to be skipped, which will desynchronize the
       // communication between d8 and Fuzzilli, leading to a crash.
       DCHECK(!fuzzilli_reprl);
-      return false;
+      return true;
     }
     global_context.Reset(isolate, context);
     if (keep_context_alive) {
@@ -5873,7 +5877,7 @@ bool ProcessMessages(
   i::SaveAndSwitchContext saved_context(i_isolate, i::Context());
   SealHandleScope shs(isolate);
 
-  if (isolate->IsExecutionTerminating()) return false;
+  if (isolate->IsExecutionTerminating()) return true;
   TryCatch try_catch(isolate);
   try_catch.SetVerbose(true);
 
@@ -5881,9 +5885,9 @@ bool ProcessMessages(
     bool ran_a_task;
     ran_a_task =
         v8::platform::PumpMessageLoop(g_default_platform, isolate, behavior());
+    if (isolate->IsExecutionTerminating()) return true;
     if (try_catch.HasCaught()) return false;
     if (ran_a_task) MicrotasksScope::PerformCheckpoint(isolate);
-    if (isolate->IsExecutionTerminating()) return false;
 
     // In predictable mode we push all background tasks into the foreground
     // task queue of the {kProcessGlobalPredictablePlatformWorkerTaskQueue}
@@ -5897,7 +5901,7 @@ bool ProcessMessages(
           platform::MessageLoopBehavior::kDoNotWait)) {
         ran_a_task = true;
         if (try_catch.HasCaught()) return false;
-        if (isolate->IsExecutionTerminating()) return false;
+        if (isolate->IsExecutionTerminating()) return true;
       }
     }
 
@@ -5907,7 +5911,7 @@ bool ProcessMessages(
     v8::platform::RunIdleTasks(g_default_platform, isolate,
                                50.0 / base::Time::kMillisecondsPerSecond);
     if (try_catch.HasCaught()) return false;
-    if (isolate->IsExecutionTerminating()) return false;
+    if (isolate->IsExecutionTerminating()) return true;
   }
   return true;
 }

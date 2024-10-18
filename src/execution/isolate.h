@@ -25,6 +25,7 @@
 #include "src/base/platform/platform-posix.h"
 #include "src/builtins/builtins.h"
 #include "src/common/globals.h"
+#include "src/common/thread-local-storage.h"
 #include "src/debug/interface-types.h"
 #include "src/execution/execution.h"
 #include "src/execution/futex-emulation.h"
@@ -562,6 +563,11 @@ using DebugObjectCache = std::vector<Handle<HeapObject>>;
 #define THREAD_LOCAL_TOP_ADDRESS(type, name) \
   inline type* name##_address() { return &thread_local_top()->name##_; }
 
+// Do not use this variable directly, use Isolate::Current() instead.
+// Defined outside of Isolate because Isolate uses V8_EXPORT_PRIVATE.
+__attribute__((tls_model(V8_TLS_MODEL))) extern thread_local Isolate*
+    g_current_isolate_ V8_CONSTINIT;
+
 // HiddenFactory exists so Isolate can privately inherit from it without making
 // Factory's members available to Isolate directly.
 class V8_EXPORT_PRIVATE HiddenFactory : private Factory {};
@@ -657,13 +663,11 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   V8_INLINE static PerIsolateThreadData* CurrentPerIsolateThreadData();
 
   // Returns the isolate inside which the current thread is running or nullptr.
-  V8_INLINE static Isolate* TryGetCurrent();
+  V8_TLS_DECLARE_GETTER(TryGetCurrent, Isolate*, g_current_isolate_)
 
   // Returns the isolate inside which the current thread is running.
   V8_INLINE static Isolate* Current();
-
-  // Returns the isolate inside which the current thread is running.
-  static Isolate* CurrentMaybeBackground();
+  static void SetCurrent(Isolate* isolate);
 
   inline bool IsCurrent() const;
 
@@ -1597,7 +1601,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 
   enum class KnownPrototype { kNone, kObject, kArray, kString };
 
-  KnownPrototype IsArrayOrObjectOrStringPrototype(Tagged<Object> object);
+  KnownPrototype IsArrayOrObjectOrStringPrototype(Tagged<JSObject> object);
 
   // On intent to set an element in object, make sure that appropriate
   // notifications occur if the set is on the elements of the array or
@@ -1625,8 +1629,9 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   void UpdateStringWrapperToPrimitiveProtectorOnSetPrototype(
       DirectHandle<JSObject> object, DirectHandle<Object> new_prototype);
 
-  // Returns true if array is the initial array prototype in any native context.
-  inline bool IsAnyInitialArrayPrototype(Tagged<JSArray> array);
+  // Returns true if array is the initial array prototype of its own creation
+  // context.
+  inline bool IsInitialArrayPrototype(Tagged<JSArray> array);
 
   std::unique_ptr<PersistentHandles> NewPersistentHandles();
 
@@ -1920,7 +1925,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
     return lazy_compile_dispatcher_.get();
   }
 
-  bool IsInAnyContext(Tagged<Object> object, uint32_t index);
+  bool IsInCreationContext(Tagged<JSObject> object, uint32_t index);
 
   void ClearKeptObjects();
 
@@ -2815,14 +2820,13 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
 };
 
 // The current entered Isolate and its thread data. Do not access these
-// directly! Use Isolate::Current and Isolate::CurrentPerIsolateThreadData.
+// directly! Use Isolate::CurrentPerIsolateThreadData instead.
 //
-// These are outside the Isolate class with extern storage because in clang-cl,
+// This is outside the Isolate class with extern storage because in clang-cl,
 // thread_local is incompatible with dllexport linkage caused by
 // V8_EXPORT_PRIVATE being applied to Isolate.
 extern thread_local Isolate::PerIsolateThreadData*
     g_current_per_isolate_thread_data_ V8_CONSTINIT;
-extern thread_local Isolate* g_current_isolate_ V8_CONSTINIT;
 
 #undef FIELD_ACCESSOR
 #undef THREAD_LOCAL_TOP_ACCESSOR
