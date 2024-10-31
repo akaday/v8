@@ -1021,6 +1021,7 @@ DEFINE_WEAK_IMPLICATION(trace_baseline, trace_baseline_batch_compilation)
 // Internalize into a shared string table in the shared isolate
 DEFINE_BOOL(shared_string_table, false, "internalize strings into shared table")
 DEFINE_IMPLICATION(harmony_struct, shared_string_table)
+DEFINE_IMPLICATION(shared_string_table, shared_heap)
 DEFINE_EXPERIMENTAL_FEATURE(
     always_use_string_forwarding_table,
     "use string forwarding table instead of thin strings for all strings")
@@ -1384,9 +1385,8 @@ DEFINE_BOOL(turboshaft_enable_debug_features, false,
             "enables Turboshaft's DebugPrint, StaticAssert and "
             "CheckTurboshaftTypeOf operations")
 #endif
-DEFINE_BOOL(turboshaft_wasm, false,
+DEFINE_BOOL(turboshaft_wasm, true,
             "enable TurboFan's Turboshaft phases for wasm")
-DEFINE_WEAK_IMPLICATION(future, turboshaft_wasm)
 DEFINE_BOOL(turboshaft_wasm_load_elimination, false,
             "enable Turboshaft's WasmLoadElimination")
 DEFINE_WEAK_IMPLICATION(turboshaft_wasm, turboshaft_wasm_load_elimination)
@@ -1578,6 +1578,9 @@ DEFINE_DEBUG_BOOL(trace_wasm_streaming, false,
                   "trace streaming compilation of wasm code")
 DEFINE_DEBUG_BOOL(trace_wasm_stack_switching, false,
                   "trace wasm stack switching")
+DEFINE_BOOL(stress_wasm_stack_switching, false,
+            "Always run wasm on a secondary stack, even when it is called "
+            "with a regular (non-JSPI) export")
 DEFINE_INT(wasm_stack_switching_stack_size, V8_DEFAULT_STACK_SIZE_KB,
            "default size of stacks for wasm stack-switching (in kB)")
 DEFINE_BOOL(liftoff, true,
@@ -3278,6 +3281,8 @@ DEFINE_BOOL(update_allocation_limits_after_loading, false,
             "force recomputation of allocation limites when leaving the "
             "loading RAIL mode (either on a RAIL mode change or incremental "
             "marking start).")
+
+DEFINE_BOOL(shared_heap, false, "Enables a shared heap between isolates.")
 
 #if defined(V8_USE_LIBM_TRIG_FUNCTIONS)
 DEFINE_BOOL(use_libm_trig_functions, true, "use libm trig functions")

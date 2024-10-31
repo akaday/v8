@@ -3057,26 +3057,6 @@ void Builtins::Generate_WasmDebugBreak(MacroAssembler* masm) {
   __ Ret();
 }
 
-void Builtins::Generate_WasmToOnHeapWasmToJsTrampoline(MacroAssembler* masm) {
-  // Load the code pointer from the WasmImportData and tail-call there.
-  Register import_data = wasm::kGpParamRegisters[0];
-  // Use t6 which is not in kGpParamRegisters.
-  Register call_target = t6;
-  UseScratchRegisterScope temps{masm};
-  temps.Exclude(t6);
-#ifdef V8_ENABLE_SANDBOX
-  __ LoadCodeEntrypointViaCodePointer(
-      call_target, FieldMemOperand(import_data, WasmImportData::kCodeOffset),
-      kWasmEntrypointTag);
-#else
-  Register code = call_target;
-  __ LoadTaggedField(code,
-                     FieldMemOperand(import_data, WasmImportData::kCodeOffset));
-  __ LoadWord(call_target,
-              FieldMemOperand(code, Code::kInstructionStartOffset));
-#endif
-  __ Jump(call_target);
-}
 #endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace {
@@ -3472,14 +3452,14 @@ void SwitchStackState(MacroAssembler* masm, Register jmpbuf, Register tmp,
                       wasm::JumpBuffer::StackState old_state,
                       wasm::JumpBuffer::StackState new_state) {
   ASM_CODE_COMMENT(masm);
-  if (v8_flags.debug_code) {
-    __ Lw(tmp, MemOperand(jmpbuf, wasm::kJmpBufStateOffset));
-    Label ok;
-    // is branch32?
-    __ Branch(&ok, eq, tmp, Operand(old_state));
-    __ Trap();
-    __ bind(&ok);
-  }
+#if V8_ENABLE_SANDBOX
+  __ Lw(tmp, MemOperand(jmpbuf, wasm::kJmpBufStateOffset));
+  Label ok;
+  // is branch32?
+  __ Branch(&ok, eq, tmp, Operand(old_state));
+  __ Trap();
+  __ bind(&ok);
+#endif
   __ li(tmp, new_state);
   __ Sw(tmp, MemOperand(jmpbuf, wasm::kJmpBufStateOffset));
 }
@@ -3503,12 +3483,11 @@ void FillJumpBuffer(MacroAssembler* masm, Register jmpbuf, Label* pc,
 }
 
 void LoadJumpBuffer(MacroAssembler* masm, Register jmpbuf, bool load_pc,
-                    Register tmp) {
+                    Register tmp, wasm::JumpBuffer::StackState expected_state) {
   ASM_CODE_COMMENT(masm);
   SwitchStackPointer(masm, jmpbuf, tmp);
   __ LoadWord(fp, MemOperand(jmpbuf, wasm::kJmpBufFpOffset));
-  SwitchStackState(masm, jmpbuf, tmp, wasm::JumpBuffer::Inactive,
-                   wasm::JumpBuffer::Active);
+  SwitchStackState(masm, jmpbuf, tmp, expected_state, wasm::JumpBuffer::Active);
   if (load_pc) {
     __ LoadWord(tmp, MemOperand(jmpbuf, wasm::kJmpBufPcOffset));
     __ Jump(tmp);
@@ -3565,7 +3544,7 @@ void ReloadParentContinuation(MacroAssembler* masm, Register return_reg,
       kWasmContinuationJmpbufTag);
 
   // Switch stack!
-  LoadJumpBuffer(masm, jmpbuf, false, tmp1);
+  LoadJumpBuffer(masm, jmpbuf, false, tmp1, wasm::JumpBuffer::Inactive);
 
   __ Push(return_reg, return_value, context);
   CallSyncStackLimit(masm, tmp1);
@@ -3615,7 +3594,8 @@ void ResetStackSwitchFrameStackSlots(MacroAssembler* masm) {
 }
 
 void LoadTargetJumpBuffer(MacroAssembler* masm, Register target_continuation,
-                          Register tmp) {
+                          Register tmp,
+                          wasm::JumpBuffer::StackState expected_state) {
   ASM_CODE_COMMENT(masm);
   Register target_jmpbuf = target_continuation;
   __ LoadExternalPointerField(
@@ -3627,7 +3607,7 @@ void LoadTargetJumpBuffer(MacroAssembler* masm, Register target_continuation,
       zero_reg,
       MemOperand(fp, StackSwitchFrameConstants::kGCScanSlotCountOffset));
   // Switch stack!
-  LoadJumpBuffer(masm, target_jmpbuf, false, tmp);
+  LoadJumpBuffer(masm, target_jmpbuf, false, tmp, expected_state);
 }
 }  // namespace
 
@@ -3660,7 +3640,7 @@ void Builtins::Generate_WasmSuspend(MacroAssembler* masm) {
       kWasmContinuationJmpbufTag);
   FillJumpBuffer(masm, jmpbuf, &resume, scratch);
   SwitchStackState(masm, jmpbuf, scratch, wasm::JumpBuffer::Active,
-                   wasm::JumpBuffer::Inactive);
+                   wasm::JumpBuffer::Suspended);
   __ Move(scratch, Smi::FromInt(WasmSuspenderObject::kSuspended));
   __ StoreTaggedField(
       scratch, FieldMemOperand(suspender, WasmSuspenderObject::kStateOffset));
@@ -3725,7 +3705,7 @@ void Builtins::Generate_WasmSuspend(MacroAssembler* masm) {
   __ StoreWord(zero_reg, GCScanSlotPlace);
   scratch = temps.Acquire();
 
-  LoadJumpBuffer(masm, jmpbuf, true, scratch);
+  LoadJumpBuffer(masm, jmpbuf, true, scratch, wasm::JumpBuffer::Inactive);
   __ Trap();
   __ bind(&resume);
   __ LeaveFrame(StackFrame::STACK_SWITCH);
@@ -3873,7 +3853,8 @@ void Generate_WasmResumeHelper(MacroAssembler* masm, wasm::OnResume on_resume) {
   __ StoreWord(zero_reg, GCScanSlotPlace);
   if (on_resume == wasm::OnResume::kThrow) {
     // Switch to the continuation's stack without restoring the PC.
-    LoadJumpBuffer(masm, target_jmpbuf, false, scratch);
+    LoadJumpBuffer(masm, target_jmpbuf, false, scratch,
+                   wasm::JumpBuffer::Suspended);
     // Pop this frame now. The unwinder expects that the first STACK_SWITCH
     // frame is the outermost one.
     __ LeaveFrame(StackFrame::STACK_SWITCH);
@@ -3882,7 +3863,8 @@ void Generate_WasmResumeHelper(MacroAssembler* masm, wasm::OnResume on_resume) {
     __ CallRuntime(Runtime::kThrow);
   } else {
     // Resume the continuation normally.
-    LoadJumpBuffer(masm, target_jmpbuf, true, scratch);
+    LoadJumpBuffer(masm, target_jmpbuf, true, scratch,
+                   wasm::JumpBuffer::Suspended);
   }
   __ Trap();
   __ bind(&suspend);
@@ -3946,7 +3928,8 @@ void SwitchToAllocatedStack(MacroAssembler* masm, Register wasm_instance,
   // the parent frame.
   __ mv(original_fp, fp);
   __ LoadRoot(target_continuation, RootIndex::kActiveContinuation);
-  LoadTargetJumpBuffer(masm, target_continuation, scratch);
+  LoadTargetJumpBuffer(masm, target_continuation, scratch,
+                       wasm::JumpBuffer::Suspended);
   FREE_REG(target_continuation);
   // Push the loaded fp. We know it is null, because there is no frame yet,
   // so we could also push 0 directly. In any case we need to push it,
@@ -4005,7 +3988,8 @@ void GetContextFromImplicitArg(MacroAssembler* masm, Register data,
   __ bind(&end);
 }
 
-void SwitchBackAndReturnPromise(MacroAssembler* masm, Label* return_promise) {
+void SwitchBackAndReturnPromise(MacroAssembler* masm, wasm::Promise mode,
+                                Label* return_promise) {
   UseScratchRegisterScope temps(masm);
   // The return value of the wasm function becomes the parameter of the
   // FulfillPromise builtin, and the promise is the return value of this
@@ -4015,11 +3999,12 @@ void SwitchBackAndReturnPromise(MacroAssembler* masm, Label* return_promise) {
   Register return_value = desc.GetRegisterParameter(1);
   Register tmp = kScratchReg;
   Register tmp2 = kScratchReg2;
-  __ Move(return_value, kReturnRegister0);
-  __ LoadRoot(promise, RootIndex::kActiveSuspender);
-  __ LoadTaggedField(
-      promise, FieldMemOperand(promise, WasmSuspenderObject::kPromiseOffset));
-
+  if (mode == wasm::kPromise) {
+    __ Move(return_value, kReturnRegister0);
+    __ LoadRoot(promise, RootIndex::kActiveSuspender);
+    __ LoadTaggedField(
+        promise, FieldMemOperand(promise, WasmSuspenderObject::kPromiseOffset));
+  }
   __ LoadWord(kContextRegister,
               MemOperand(fp, StackSwitchFrameConstants::kImplicitArgOffset));
   GetContextFromImplicitArg(masm, kContextRegister, tmp);
@@ -4028,15 +4013,16 @@ void SwitchBackAndReturnPromise(MacroAssembler* masm, Label* return_promise) {
                            tmp2);
   RestoreParentSuspender(masm, tmp, tmp2);
 
-  __ li(tmp, 1);
-  __ StoreWord(
-      tmp, MemOperand(fp, StackSwitchFrameConstants::kGCScanSlotCountOffset));
+  if (mode == wasm::kPromise) {
+    __ li(tmp, 1);
+    __ StoreWord(
+        tmp, MemOperand(fp, StackSwitchFrameConstants::kGCScanSlotCountOffset));
+    __ Push(promise);
+    __ CallBuiltin(Builtin::kFulfillPromise);
+    __ Pop(promise);
+  }
   tmp = no_reg;
   tmp2 = no_reg;
-  __ Push(promise);
-  __ CallBuiltin(Builtin::kFulfillPromise);
-  __ Pop(promise);
-
   __ bind(return_promise);
 }
 
@@ -4087,7 +4073,8 @@ void GenerateExceptionHandlingLandingPad(MacroAssembler* masm,
   masm->isolate()->builtins()->SetJSPIPromptHandlerOffset(catch_handler);
 }
 
-void JSToWasmWrapperHelper(MacroAssembler* masm, bool stack_switch) {
+void JSToWasmWrapperHelper(MacroAssembler* masm, wasm::Promise mode) {
+  bool stack_switch = mode == wasm::kPromise || mode == wasm::kStressSwitch;
   __ EnterFrame(stack_switch ? StackFrame::STACK_SWITCH
                              : StackFrame::JS_TO_WASM);
 
@@ -4300,7 +4287,7 @@ void JSToWasmWrapperHelper(MacroAssembler* masm, bool stack_switch) {
 
   Label return_promise;
   if (stack_switch) {
-    SwitchBackAndReturnPromise(masm, &return_promise);
+    SwitchBackAndReturnPromise(masm, mode, &return_promise);
   }
   __ bind(&suspend);
 
@@ -4317,21 +4304,28 @@ void JSToWasmWrapperHelper(MacroAssembler* masm, bool stack_switch) {
 
   // Catch handler for the stack-switching wrapper: reject the promise with the
   // thrown exception.
-  if (stack_switch) {
+  if (mode == wasm::kPromise) {
     GenerateExceptionHandlingLandingPad(masm, &return_promise);
   }
 }
 }  // namespace
 
 void Builtins::Generate_JSToWasmWrapperAsm(MacroAssembler* masm) {
-  JSToWasmWrapperHelper(masm, false);
+  JSToWasmWrapperHelper(masm, wasm::kNoPromise);
 }
 void Builtins::Generate_WasmReturnPromiseOnSuspendAsm(MacroAssembler* masm) {
   UseScratchRegisterScope temps(masm);
   temps.Include(t1, t2);
   DCHECK(!AreAliased(WasmJSToWasmWrapperDescriptor::WrapperBufferRegister(), t1,
                      t2));
-  JSToWasmWrapperHelper(masm, true);
+  JSToWasmWrapperHelper(masm, wasm::kPromise);
+}
+void Builtins::Generate_JSToWasmStressSwitchStacksAsm(MacroAssembler* masm) {
+  UseScratchRegisterScope temps(masm);
+  temps.Include(t1, t2);
+  DCHECK(!AreAliased(WasmJSToWasmWrapperDescriptor::WrapperBufferRegister(), t1,
+                     t2));
+  JSToWasmWrapperHelper(masm, wasm::kStressSwitch);
 }
 
 void Builtins::Generate_CallApiCallbackImpl(MacroAssembler* masm,

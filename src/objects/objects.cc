@@ -179,21 +179,29 @@ bool ComparisonResultToBool(Operation op, ComparisonResult result) {
   UNREACHABLE();
 }
 
-std::ostream& operator<<(std::ostream& os, InstanceType instance_type) {
+std::string ToString(InstanceType instance_type) {
   if (InstanceTypeChecker::IsJSApiObject(instance_type)) {
-    return os << "[api object] "
-              << static_cast<int16_t>(instance_type) -
-                     i::Internals::kFirstJSApiObjectType;
+    std::stringstream ss;
+    ss << "[api object] "
+       << static_cast<int16_t>(instance_type) -
+              i::Internals::kFirstJSApiObjectType;
+    return ss.str();
   }
   switch (instance_type) {
 #define WRITE_TYPE(TYPE) \
   case TYPE:             \
-    return os << #TYPE;
+    return #TYPE;
     INSTANCE_TYPE_LIST(WRITE_TYPE)
 #undef WRITE_TYPE
   }
-  return os << "[unknown instance type " << static_cast<int16_t>(instance_type)
-            << "]";
+
+  std::stringstream ss;
+  ss << "[unknown instance type " << static_cast<int16_t>(instance_type) << "]";
+  return ss.str();
+}
+
+std::ostream& operator<<(std::ostream& os, InstanceType instance_type) {
+  return os << ToString(instance_type);
 }
 
 std::ostream& operator<<(std::ostream& os, PropertyCellType type) {
@@ -1373,11 +1381,11 @@ bool Object::ToInt32(Tagged<Object> obj, int32_t* value) {
 
 // ES6 9.5.1
 // static
-MaybeHandle<HeapObject> JSProxy::GetPrototype(DirectHandle<JSProxy> proxy) {
+MaybeHandle<JSPrototype> JSProxy::GetPrototype(DirectHandle<JSProxy> proxy) {
   Isolate* isolate = proxy->GetIsolate();
   Handle<String> trap_name = isolate->factory()->getPrototypeOf_string();
 
-  STACK_CHECK(isolate, MaybeHandle<HeapObject>());
+  STACK_CHECK(isolate, {});
 
   // 1. Let handler be the value of the [[ProxyHandler]] internal slot.
   // 2. If handler is null, throw a TypeError exception.
@@ -1400,22 +1408,23 @@ MaybeHandle<HeapObject> JSProxy::GetPrototype(DirectHandle<JSProxy> proxy) {
   }
   // 7. Let handlerProto be ? Call(trap, handler, «target»).
   Handle<Object> argv[] = {target};
-  Handle<Object> handler_proto;
+  Handle<Object> handler_proto_result;
   ASSIGN_RETURN_ON_EXCEPTION(
-      isolate, handler_proto,
+      isolate, handler_proto_result,
       Execution::Call(isolate, trap, handler, arraysize(argv), argv));
   // 8. If Type(handlerProto) is neither Object nor Null, throw a TypeError.
-  if (!(IsJSReceiver(*handler_proto) || IsNull(*handler_proto, isolate))) {
+  Handle<JSPrototype> handler_proto;
+  if (!TryCast(handler_proto_result, &handler_proto)) {
     THROW_NEW_ERROR(isolate,
                     NewTypeError(MessageTemplate::kProxyGetPrototypeOfInvalid));
   }
   // 9. Let extensibleTarget be ? IsExtensible(target).
   Maybe<bool> is_extensible = JSReceiver::IsExtensible(isolate, target);
-  MAYBE_RETURN(is_extensible, MaybeHandle<HeapObject>());
+  MAYBE_RETURN(is_extensible, {});
   // 10. If extensibleTarget is true, return handlerProto.
-  if (is_extensible.FromJust()) return Cast<HeapObject>(handler_proto);
+  if (is_extensible.FromJust()) return handler_proto;
   // 11. Let targetProto be ? target.[[GetPrototypeOf]]().
-  Handle<HeapObject> target_proto;
+  Handle<JSPrototype> target_proto;
   ASSIGN_RETURN_ON_EXCEPTION(isolate, target_proto,
                              JSReceiver::GetPrototype(isolate, target));
   // 12. If SameValue(handlerProto, targetProto) is false, throw a TypeError.
@@ -1425,7 +1434,7 @@ MaybeHandle<HeapObject> JSProxy::GetPrototype(DirectHandle<JSProxy> proxy) {
         NewTypeError(MessageTemplate::kProxyGetPrototypeOfNonExtensible));
   }
   // 13. Return handlerProto.
-  return Cast<HeapObject>(handler_proto);
+  return handler_proto;
 }
 
 MaybeHandle<JSAny> Object::GetPropertyWithAccessor(LookupIterator* it) {
@@ -1843,20 +1852,6 @@ void ClassPositions::BriefPrintDetails(std::ostream& os) {
 
 void CallableTask::BriefPrintDetails(std::ostream& os) {
   os << " callable=" << Brief(callable());
-}
-
-void HeapObject::Iterate(PtrComprCageBase cage_base, ObjectVisitor* v) {
-  IterateFast<ObjectVisitor>(cage_base, v);
-}
-
-void HeapObject::IterateBody(PtrComprCageBase cage_base, ObjectVisitor* v) {
-  Tagged<Map> m = map(cage_base);
-  IterateBodyFast<ObjectVisitor>(m, SizeFromMap(m), v);
-}
-
-void HeapObject::IterateBody(Tagged<Map> map, int object_size,
-                             ObjectVisitor* v) {
-  IterateBodyFast<ObjectVisitor>(map, object_size, v);
 }
 
 int HeapObjectLayout::SizeFromMap(Tagged<Map> map) const {
@@ -5898,7 +5893,7 @@ void RehashObjectHashTableAndGCIfNeeded(Isolate* isolate, Handle<T> table) {
   // isn't enough to avoid a crash.
   if (!table->HasSufficientCapacityToAdd(1)) {
     int nof = table->NumberOfElements() + 1;
-    int capacity = T::ComputeCapacity(nof * 2);
+    int capacity = T::ComputeCapacity(nof);
     if (capacity > T::kMaxCapacity) {
       for (size_t i = 0; i < 2; ++i) {
         isolate->heap()->CollectAllGarbage(

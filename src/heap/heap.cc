@@ -60,6 +60,8 @@
 #include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-layout-tracer.h"
 #include "src/heap/heap-utils-inl.h"
+#include "src/heap/heap-visitor-inl.h"
+#include "src/heap/heap-visitor.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/heap/incremental-marking-inl.h"
 #include "src/heap/incremental-marking.h"
@@ -82,8 +84,6 @@
 #include "src/heap/new-spaces.h"
 #include "src/heap/object-lock.h"
 #include "src/heap/object-stats.h"
-#include "src/heap/objects-visiting-inl.h"
-#include "src/heap/objects-visiting.h"
 #include "src/heap/paged-spaces-inl.h"
 #include "src/heap/parked-scope.h"
 #include "src/heap/pretenuring-handler.h"
@@ -94,6 +94,7 @@
 #include "src/heap/stress-scavenge-observer.h"
 #include "src/heap/sweeper.h"
 #include "src/heap/trusted-range.h"
+#include "src/heap/visit-object.h"
 #include "src/heap/zapping.h"
 #include "src/init/bootstrapper.h"
 #include "src/init/v8.h"
@@ -110,6 +111,7 @@
 #include "src/objects/objects.h"
 #include "src/objects/slots-atomic-inl.h"
 #include "src/objects/slots-inl.h"
+#include "src/objects/slots.h"
 #include "src/objects/visitors.h"
 #include "src/profiler/heap-profiler.h"
 #include "src/regexp/regexp.h"
@@ -1978,6 +1980,7 @@ void Heap::StartIncrementalMarking(GCFlags gc_flags,
   incremental_marking()->Start(collector, gc_reason);
 
   if (collector == GarbageCollector::MARK_COMPACTOR) {
+    DCHECK(incremental_marking()->IsMajorMarking());
     is_full_gc_during_loading_ = update_allocation_limits_after_loading_;
     RecomputeLimitsAfterLoadingIfNeeded();
     DCHECK(!update_allocation_limits_after_loading_);
@@ -2370,7 +2373,8 @@ void Heap::PerformGarbageCollection(GarbageCollector collector,
   RecomputeLimits(collector, atomic_pause_end_time);
   if ((collector == GarbageCollector::MARK_COMPACTOR) &&
       is_full_gc_during_loading_) {
-    if (ShouldOptimizeForLoadTime()) {
+    if (ShouldOptimizeForLoadTime() &&
+        v8_flags.update_allocation_limits_after_loading) {
       update_allocation_limits_after_loading_ = true;
     }
     is_full_gc_during_loading_ = false;
@@ -2603,20 +2607,33 @@ void Heap::RecomputeLimits(GarbageCollector collector, base::TimeTicks time) {
 }
 
 void Heap::RecomputeLimitsAfterLoadingIfNeeded() {
+  if (!v8_flags.update_allocation_limits_after_loading) {
+    DCHECK(!update_allocation_limits_after_loading_);
+    return;
+  }
+
   if (!update_allocation_limits_after_loading_) {
     return;
   }
-  update_allocation_limits_after_loading_ = false;
-
-  if (!v8_flags.update_allocation_limits_after_loading) return;
 
   if ((OldGenerationSpaceAvailable() > 0) && (GlobalMemoryAvailable() > 0)) {
     // Only recompute limits if memory accumulated during loading may lead to
     // atomic GC. If there is still room to allocate, keep the current limits.
-    // TODO(346498599): Consider removing this bailout.
     DCHECK(!AllocationLimitOvershotByLargeMargin());
+    update_allocation_limits_after_loading_ = false;
     return;
   }
+
+  if (!incremental_marking()->IsMajorMarking()) {
+    // Incremental marking should have started already but was delayed. Don't
+    // update the limits yet to not delay starting incremental marking any
+    // further. Limits will be updated on incremental marking start, with the
+    // intention to give more slack and avoid an immediate large finalization
+    // pause.
+    return;
+  }
+
+  update_allocation_limits_after_loading_ = false;
 
   UpdateOldGenerationAllocationCounter();
   old_generation_size_at_last_gc_ = OldGenerationSizeOfObjects();
@@ -3091,16 +3108,17 @@ void Heap::VisitExternalResources(v8::ExternalResourceVisitor* visitor) {
   external_string_table_.IterateAll(&external_string_table_visitor);
 }
 
-static_assert(IsAligned(FixedDoubleArray::kHeaderSize, kDoubleAlignment));
+static_assert(IsAligned(OFFSET_OF_DATA_START(FixedDoubleArray),
+                        kDoubleAlignment));
 
 #ifdef V8_COMPRESS_POINTERS
 // TODO(ishell, v8:8875): When pointer compression is enabled the kHeaderSize
 // is only kTaggedSize aligned but we can keep using unaligned access since
 // both x64 and arm64 architectures (where pointer compression supported)
 // allow unaligned access to doubles.
-static_assert(IsAligned(ByteArray::kHeaderSize, kTaggedSize));
+static_assert(IsAligned(OFFSET_OF_DATA_START(ByteArray), kTaggedSize));
 #else
-static_assert(IsAligned(ByteArray::kHeaderSize, kDoubleAlignment));
+static_assert(IsAligned(OFFSET_OF_DATA_START(ByteArray), kDoubleAlignment));
 #endif
 
 int Heap::GetMaximumFillToAlign(AllocationAlignment alignment) {
@@ -3978,10 +3996,11 @@ namespace {
 thread_local Address pending_layout_change_object_address = kNullAddress;
 
 #ifdef V8_ENABLE_SANDBOX
-class ExternalPointerSlotInvalidator : public ObjectVisitor {
+class ExternalPointerSlotInvalidator
+    : public HeapVisitor<ExternalPointerSlotInvalidator> {
  public:
   explicit ExternalPointerSlotInvalidator(Isolate* isolate)
-      : isolate_(isolate) {}
+      : HeapVisitor(isolate), isolate_(isolate) {}
 
   void VisitPointers(Tagged<HeapObject> host, ObjectSlot start,
                      ObjectSlot end) override {}
@@ -4004,7 +4023,7 @@ class ExternalPointerSlotInvalidator : public ObjectVisitor {
   int Visit(Tagged<HeapObject> target) {
     target_ = target;
     num_invalidated_slots = 0;
-    target->IterateFast(isolate_, this);
+    HeapVisitor::Visit(target);
     return num_invalidated_slots;
   }
 
@@ -4333,11 +4352,12 @@ bool Heap::MeasureMemory(std::unique_ptr<v8::MeasureMemoryDelegate> delegate,
                                              to_measure);
 }
 
-std::unique_ptr<v8::MeasureMemoryDelegate> Heap::MeasureMemoryDelegate(
-    Handle<NativeContext> context, Handle<JSPromise> promise,
+std::unique_ptr<v8::MeasureMemoryDelegate>
+Heap::CreateDefaultMeasureMemoryDelegate(
+    v8::Local<v8::Context> context, v8::Local<v8::Promise::Resolver> promise,
     v8::MeasureMemoryMode mode) {
-  return i::MemoryMeasurement::DefaultDelegate(isolate_, context, promise,
-                                               mode);
+  return i::MemoryMeasurement::DefaultDelegate(
+      reinterpret_cast<v8::Isolate*>(isolate_), context, promise, mode);
 }
 
 void Heap::CollectCodeStatistics() {
@@ -5327,8 +5347,7 @@ bool Heap::AllocationLimitOvershotByLargeMargin() const {
 }
 
 bool Heap::ShouldOptimizeForLoadTime() const {
-  return isolate()->rail_mode() == PERFORMANCE_LOAD &&
-         !AllocationLimitOvershotByLargeMargin() &&
+  return isolate()->is_loading() && !AllocationLimitOvershotByLargeMargin() &&
          MonotonicallyIncreasingTimeInMs() <
              (load_start_time_ms_.load(std::memory_order_relaxed) +
               kMaxLoadTimeMs);
@@ -6626,7 +6645,7 @@ class UnreachableObjectsFilter : public HeapObjectsFilter {
       while (!marking_stack_.empty()) {
         Tagged<HeapObject> obj = marking_stack_.back();
         marking_stack_.pop_back();
-        obj->Iterate(cage_base(), this);
+        VisitObject(filter_->heap_->isolate(), obj, this);
       }
     }
 
@@ -7252,7 +7271,13 @@ uint8_t* Heap::IsMinorMarkingFlagAddress() {
   return &isolate()->isolate_data()->is_minor_marking_flag_;
 }
 
+StrongRootAllocatorBase::StrongRootAllocatorBase(LocalHeap* heap)
+    : StrongRootAllocatorBase(heap->heap()) {}
 StrongRootAllocatorBase::StrongRootAllocatorBase(Isolate* isolate)
+    : StrongRootAllocatorBase(isolate->heap()) {}
+StrongRootAllocatorBase::StrongRootAllocatorBase(v8::Isolate* isolate)
+    : StrongRootAllocatorBase(reinterpret_cast<Isolate*>(isolate)) {}
+StrongRootAllocatorBase::StrongRootAllocatorBase(LocalIsolate* isolate)
     : StrongRootAllocatorBase(isolate->heap()) {}
 
 // StrongRootBlocks are allocated as a block of addresses, prefixed with a
@@ -7397,7 +7422,9 @@ void Heap::EnsureYoungSweepingCompleted() {
 }
 
 void Heap::NotifyLoadingStarted() {
-  update_allocation_limits_after_loading_ = true;
+  if (v8_flags.update_allocation_limits_after_loading) {
+    update_allocation_limits_after_loading_ = true;
+  }
   UpdateLoadStartTime();
 }
 

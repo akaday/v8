@@ -67,7 +67,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   void BindJumpTarget(Label* label) override;
 
   void Fail() override;
-  Handle<HeapObject> GetCode(Handle<String> source) override;
+  Handle<HeapObject> GetCode(Handle<String> source, RegExpFlags flags) override;
   void GoTo(Label* label) override;
   void IfRegisterGE(int reg, int comparand, Label* if_ge) override;
   void IfRegisterLT(int reg, int comparand, Label* if_lt) override;
@@ -279,6 +279,9 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerX64
   void StoreRegExpStackPointerToMemory(Register src, Register scratch);
   void PushRegExpBasePointer(Register scratch_pointer, Register scratch);
   void PopRegExpBasePointer(Register scratch_pointer_out, Register scratch);
+
+  void EncodePositionIndependentRegisterOutput(Register scratch_and_out);
+  void DecodePositionIndependentRegisterOutput(Register scratch_and_out);
 
   inline void ReadPositionFromRegister(Register dst, int reg);
 

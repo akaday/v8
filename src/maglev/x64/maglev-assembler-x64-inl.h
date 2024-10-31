@@ -398,6 +398,12 @@ void MaglevAssembler::LoadFixedArrayElement(Register result, Register array,
                          OFFSET_OF_DATA_START(FixedArray));
 }
 
+inline void MaglevAssembler::LoadTaggedFieldWithoutDecompressing(
+    Register result, Register object, int offset) {
+  MacroAssembler::LoadTaggedFieldWithoutDecompressing(
+      result, FieldMemOperand(object, offset));
+}
+
 void MaglevAssembler::LoadFixedArrayElementWithoutDecompressing(
     Register result, Register array, Register index) {
   if (v8_flags.debug_code) {
@@ -419,13 +425,14 @@ void MaglevAssembler::LoadFixedDoubleArrayElement(DoubleRegister result,
     CompareInt32AndAssert(index, 0, kUnsignedGreaterThanEqual,
                           AbortReason::kUnexpectedNegativeValue);
   }
-  Movsd(result,
-        FieldOperand(array, index, times_8, FixedDoubleArray::kHeaderSize));
+  Movsd(result, FieldOperand(array, index, times_8,
+                             OFFSET_OF_DATA_START(FixedDoubleArray)));
 }
 
 inline void MaglevAssembler::StoreFixedDoubleArrayElement(
     Register array, Register index, DoubleRegister value) {
-  Movsd(FieldOperand(array, index, times_8, FixedDoubleArray::kHeaderSize),
+  Movsd(FieldOperand(array, index, times_8,
+                     OFFSET_OF_DATA_START(FixedDoubleArray)),
         value);
 }
 

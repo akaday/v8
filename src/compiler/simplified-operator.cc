@@ -822,6 +822,7 @@ bool operator==(AssertNotNullParameters const& lhs,
   V(StringFromSingleCodePoint, Operator::kNoProperties, 1, 0)     \
   V(StringIndexOf, Operator::kNoProperties, 3, 0)                 \
   V(StringLength, Operator::kNoProperties, 1, 0)                  \
+  V(StringWrapperLength, Operator::kNoProperties, 1, 0)           \
   V(StringToLowerCaseIntl, Operator::kNoProperties, 1, 0)         \
   V(StringToUpperCaseIntl, Operator::kNoProperties, 1, 0)         \
   V(TypeOf, Operator::kNoProperties, 1, 1)                        \
@@ -936,6 +937,7 @@ bool operator==(AssertNotNullParameters const& lhs,
   V(CheckNumber, 1, 1)                   \
   V(CheckSmi, 1, 1)                      \
   V(CheckString, 1, 1)                   \
+  V(CheckStringWrapper, 1, 1)            \
   V(CheckStringOrStringWrapper, 1, 1)    \
   V(CheckBigInt, 1, 1)                   \
   V(CheckedBigIntToBigInt64, 1, 1)       \
@@ -1891,17 +1893,17 @@ const Operator* SimplifiedOperatorBuilder::SpeculativeToBigInt(
 
 const Operator* SimplifiedOperatorBuilder::CheckClosure(
     const Handle<FeedbackCell>& feedback_cell) {
-  return zone()->New<Operator1<Handle<FeedbackCell>>>(  // --
-      IrOpcode::kCheckClosure,                          // opcode
-      Operator::kNoThrow | Operator::kNoWrite,          // flags
-      "CheckClosure",                                   // name
-      1, 1, 1, 1, 1, 0,                                 // counts
-      feedback_cell);                                   // parameter
+  return zone()->New<Operator1<IndirectHandle<FeedbackCell>>>(  // --
+      IrOpcode::kCheckClosure,                                  // opcode
+      Operator::kNoThrow | Operator::kNoWrite,                  // flags
+      "CheckClosure",                                           // name
+      1, 1, 1, 1, 1, 0,                                         // counts
+      feedback_cell);                                           // parameter
 }
 
 Handle<FeedbackCell> FeedbackCellOf(const Operator* op) {
   DCHECK(IrOpcode::kCheckClosure == op->opcode());
-  return OpParameter<Handle<FeedbackCell>>(op);
+  return OpParameter<IndirectHandle<FeedbackCell>>(op);
 }
 
 const Operator* SimplifiedOperatorBuilder::SpeculativeToNumber(

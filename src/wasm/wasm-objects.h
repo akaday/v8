@@ -229,7 +229,7 @@ class WasmTableObject
       Isolate* isolate, Handle<WasmTrustedInstanceData> trusted_data,
       wasm::ValueType type, uint32_t initial, bool has_maximum,
       uint64_t maximum, DirectHandle<Object> initial_value,
-      wasm::IndexType index_type);
+      wasm::AddressType address_type);
 
   // Store that a specific instance uses this table, in order to update the
   // instance's dispatch table when this table grows (and hence needs to
@@ -331,11 +331,11 @@ class WasmMemoryObject
 
   V8_EXPORT_PRIVATE static Handle<WasmMemoryObject> New(
       Isolate* isolate, Handle<JSArrayBuffer> buffer, int maximum,
-      wasm::IndexType index_type);
+      wasm::AddressType address_type);
 
   V8_EXPORT_PRIVATE static MaybeHandle<WasmMemoryObject> New(
       Isolate* isolate, int initial, int maximum, SharedFlag shared,
-      wasm::IndexType index_type);
+      wasm::AddressType address_type);
 
   // Assign a new (grown) buffer to this memory, also updating the shortcut
   // fields of all instances that use this memory.
@@ -1000,8 +1000,8 @@ class WasmFunctionData
       WithStrongCodePointer<kWrapperCodeOffset>,
       WithProtectedPointer<kProtectedInternalOffset>>;
 
-  using SuspendField = base::BitField<wasm::Suspend, 0, 2>;
-  using PromiseField = base::BitField<wasm::Promise, 2, 2>;
+  using SuspendField = base::BitField<wasm::Suspend, 0, 1>;
+  using PromiseField = SuspendField::Next<wasm::Promise, 1>;
 
   TQ_OBJECT_CONSTRUCTORS(WasmFunctionData)
 };
@@ -1020,6 +1020,8 @@ class WasmExportedFunctionData
   // Prefer to use this convenience wrapper of the Torque-generated
   // {canonical_type_index()}.
   inline wasm::CanonicalTypeIndex sig_index() const;
+
+  inline bool is_promising() const;
 
   bool MatchesSignature(wasm::CanonicalTypeIndex other_canonical_sig_index);
 
@@ -1041,8 +1043,6 @@ class WasmImportData
  public:
   // Dispatched behavior.
   DECL_PRINTER(WasmImportData)
-
-  DECL_CODE_POINTER_ACCESSORS(code)
 
   DECL_PROTECTED_POINTER_ACCESSORS(instance_data, WasmTrustedInstanceData)
 
@@ -1069,8 +1069,7 @@ class WasmImportData
 
   using BodyDescriptor =
       StackedBodyDescriptor<FixedBodyDescriptorFor<WasmImportData>,
-                            WithProtectedPointer<kProtectedInstanceDataOffset>,
-                            WithStrongCodePointer<kCodeOffset>>;
+                            WithProtectedPointer<kProtectedInstanceDataOffset>>;
 
   TQ_OBJECT_CONSTRUCTORS(WasmImportData)
 };
@@ -1120,6 +1119,25 @@ class WasmJSFunctionData
     : public TorqueGeneratedWasmJSFunctionData<WasmJSFunctionData,
                                                WasmFunctionData> {
  public:
+  // The purpose of this class is to provide lifetime management for compiled
+  // wrappers: the {WasmJSFunction} owns an {OffheapData} via {TrustedManaged},
+  // which decrements the wrapper's refcount when the {WasmJSFunction} is
+  // garbage-collected.
+  class OffheapData {
+   public:
+    OffheapData() = default;
+    ~OffheapData();
+
+    void set_wrapper(wasm::WasmCode* wrapper);
+
+   private:
+    wasm::WasmCode* wrapper_{nullptr};
+  };
+
+  DECL_PROTECTED_POINTER_ACCESSORS(protected_offheap_data,
+                                   TrustedManaged<OffheapData>)
+  inline OffheapData* offheap_data() const;
+
   Tagged<JSReceiver> GetCallable() const;
   wasm::Suspend GetSuspend() const;
   const wasm::CanonicalSig* GetSignature() const;
@@ -1132,9 +1150,10 @@ class WasmJSFunctionData
   // Dispatched behavior.
   DECL_PRINTER(WasmJSFunctionData)
 
-  using BodyDescriptor =
+  using BodyDescriptor = StackedBodyDescriptor<
       SubclassBodyDescriptor<WasmFunctionData::BodyDescriptor,
-                             FixedBodyDescriptorFor<WasmJSFunctionData>>;
+                             FixedBodyDescriptorFor<WasmJSFunctionData>>,
+      WithProtectedPointer<kProtectedOffheapDataOffset>>;
 
  private:
   TQ_OBJECT_CONSTRUCTORS(WasmJSFunctionData)

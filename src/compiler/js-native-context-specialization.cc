@@ -1599,6 +1599,9 @@ Reduction JSNativeContextSpecialization::ReduceNamedAccess(
     } else if (!access_builder.TryBuildStringCheck(
                    broker(), access_info.lookup_start_object_maps(), &receiver,
                    &effect, control) &&
+               !access_builder.TryBuildStringWrapperCheck(
+                   broker(), access_info.lookup_start_object_maps(), &receiver,
+                   &effect, control) &&
                !access_builder.TryBuildNumberCheck(
                    broker(), access_info.lookup_start_object_maps(), &receiver,
                    &effect, control)) {
@@ -1760,6 +1763,12 @@ Reduction JSNativeContextSpecialization::ReduceNamedAccess(
           DCHECK_EQ(receiver, lookup_start_object);
           this_lookup_start_object = this_receiver = this_effect =
               graph()->NewNode(common()->TypeGuard(Type::String()),
+                               lookup_start_object, this_effect, this_control);
+        } else if (HasOnlyStringWrapperMaps(broker(),
+                                            lookup_start_object_maps)) {
+          DCHECK_EQ(receiver, lookup_start_object);
+          this_lookup_start_object = this_receiver = this_effect =
+              graph()->NewNode(common()->TypeGuard(Type::StringWrapper()),
                                lookup_start_object, this_effect, this_control);
         }
       }
@@ -2523,26 +2532,39 @@ Reduction JSNativeContextSpecialization::ReducePropertyAccess(
          node->opcode() == IrOpcode::kJSDefineKeyedOwnProperty);
   DCHECK_GE(node->op()->ControlOutputCount(), 1);
 
-  ProcessedFeedback const& feedback =
-      broker()->GetFeedbackForPropertyAccess(source, access_mode, static_name);
-  switch (feedback.kind()) {
+  ProcessedFeedback const* feedback =
+      &broker()->GetFeedbackForPropertyAccess(source, access_mode, static_name);
+
+  if (feedback->kind() == ProcessedFeedback::kElementAccess &&
+      feedback->AsElementAccess().transition_groups().empty()) {
+    HeapObjectMatcher m_key(key);
+    if (m_key.HasResolvedValue() && m_key.Ref(broker()).IsName()) {
+      NameRef name_key = m_key.Ref(broker()).AsName();
+      if (name_key.IsUniqueName() && !name_key.object()->IsArrayIndex()) {
+        feedback = &feedback->AsElementAccess().Refine(
+            broker(), m_key.Ref(broker()).AsName());
+      }
+    }
+  }
+
+  switch (feedback->kind()) {
     case ProcessedFeedback::kInsufficient:
       return ReduceEagerDeoptimize(
           node,
           DeoptimizeReason::kInsufficientTypeFeedbackForGenericNamedAccess);
     case ProcessedFeedback::kNamedAccess:
-      return ReduceNamedAccess(node, value, feedback.AsNamedAccess(),
+      return ReduceNamedAccess(node, value, feedback->AsNamedAccess(),
                                access_mode, key);
     case ProcessedFeedback::kMegaDOMPropertyAccess:
       DCHECK_EQ(access_mode, AccessMode::kLoad);
       DCHECK_NULL(key);
       return ReduceMegaDOMPropertyAccess(
-          node, value, feedback.AsMegaDOMPropertyAccess(), source);
+          node, value, feedback->AsMegaDOMPropertyAccess(), source);
     case ProcessedFeedback::kElementAccess:
-      DCHECK_EQ(feedback.AsElementAccess().keyed_mode().access_mode(),
+      DCHECK_EQ(feedback->AsElementAccess().keyed_mode().access_mode(),
                 access_mode);
       DCHECK_NE(node->opcode(), IrOpcode::kJSLoadNamedFromSuper);
-      return ReduceElementAccess(node, key, value, feedback.AsElementAccess());
+      return ReduceElementAccess(node, key, value, feedback->AsElementAccess());
     default:
       UNREACHABLE();
   }
@@ -2944,6 +2966,9 @@ JSNativeContextSpecialization::BuildPropertyLoad(
   } else if (access_info.IsStringLength()) {
     DCHECK_EQ(receiver, lookup_start_object);
     value = graph()->NewNode(simplified()->StringLength(), receiver);
+  } else if (access_info.IsStringWrapperLength()) {
+    DCHECK_EQ(receiver, lookup_start_object);
+    value = graph()->NewNode(simplified()->StringWrapperLength(), receiver);
   } else {
     DCHECK(access_info.IsDataField() || access_info.IsFastDataConstant() ||
            access_info.IsDictionaryProtoDataConstant());

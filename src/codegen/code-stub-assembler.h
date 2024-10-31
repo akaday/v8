@@ -3626,6 +3626,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
                                      TNode<Object> callable,
                                      TNode<Object> object);
 
+  TNode<BytecodeArray> LoadBytecodeArrayFromBaseline();
+
   // Load type feedback vector from the stub caller's frame.
   TNode<FeedbackVector> LoadFeedbackVectorForStub();
   TNode<FeedbackVector> LoadFeedbackVectorFromBaseline();
@@ -3762,10 +3764,19 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   TNode<Object> LoadNestedAllocationSite(TNode<AllocationSite> allocation_site);
 
   enum class IndexAdvanceMode { kPre, kPost };
+  enum class IndexAdvanceDirection { kUp, kDown };
   enum class LoopUnrollingMode { kNo, kYes };
 
   template <typename TIndex>
   using FastLoopBody = std::function<void(TNode<TIndex> index)>;
+
+  template <typename TIndex>
+  void BuildFastLoop(const VariableList& vars, TVariable<TIndex>& var_index,
+                     TNode<TIndex> start_index, TNode<TIndex> end_index,
+                     const FastLoopBody<TIndex>& body, TNode<TIndex> increment,
+                     LoopUnrollingMode unrolling_mode,
+                     IndexAdvanceMode advance_mode,
+                     IndexAdvanceDirection advance_direction);
 
   template <typename TIndex>
   void BuildFastLoop(const VariableList& vars, TVariable<TIndex>& var_index,
@@ -4086,9 +4097,32 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
     return LoadBuiltinDispatchHandle(JSBuiltinDispatchHandleRoot::to_idx(idx));
   }
 
-  // Load a Code object from the JSDispatchTable.
-  TNode<Code> ResolveJSDispatchHandle(TNode<JSDispatchHandleT> dispatch_handle);
+  // Load the Code object of a JSDispatchTable entry.
+  TNode<Code> LoadCodeObjectFromJSDispatchTable(
+      TNode<JSDispatchHandleT> dispatch_handle);
+  // Load the parameter count of a JSDispatchTable entry.
+  TNode<Uint16T> LoadParameterCountFromJSDispatchTable(
+      TNode<JSDispatchHandleT> dispatch_handle);
 #endif
+
+  // Indicate that this code must support a dynamic parameter count.
+  //
+  // This is used for builtins that must work on functions with different
+  // parameter counts. In that case, the true JS parameter count is only known
+  // at runtime and must be obtained in order to compute the total number of
+  // arguments (which may include padding arguments). The parameter count is
+  // subsequently available through the corresponding CodeAssembler accessors.
+  // The target function object and the dispatch handle need to be passed in
+  // and are used to obtain the actual parameter count of the called function.
+  //
+  // This should generally be invoked directly at the start of the function.
+  //
+  // TODO(saelo): it would be a bit nicer if this would happen automatically in
+  // the function prologue for functions marked as requiring this (e.g. via the
+  // call descriptor). It's not clear if that's worth the effort though for the
+  // handful of builtins that need this.
+  void SetSupportsDynamicParameterCount(
+      TNode<JSFunction> callee, TNode<JSDispatchHandleT> dispatch_handle);
 
   // Figure out the SFI's code object using its data field.
   // If |data_type_out| is provided, the instance type of the function data will
@@ -4697,6 +4731,9 @@ class V8_EXPORT_PRIVATE CodeStubArguments {
         argc_(torque_arguments.actual_count),
         base_(torque_arguments.base),
         fp_(torque_arguments.frame) {}
+
+  // Return true if there may be additional padding arguments, false otherwise.
+  bool MayHavePaddingArguments() const;
 
   TNode<Object> GetReceiver() const;
   // Replaces receiver argument on the expression stack. Should be used only

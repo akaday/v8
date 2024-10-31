@@ -44,7 +44,9 @@ class Isolate;
 namespace internal {
 
 class Heap;
+class LocalHeap;
 class Isolate;
+class LocalIsolate;
 
 typedef uintptr_t Address;
 static constexpr Address kNullAddress = 0;
@@ -971,8 +973,10 @@ class Internals {
   static const int kIsolateApiCallbackThunkArgumentOffset =
       kIsolateEmbedderDataOffset + kNumIsolateDataSlots * kApiSystemPointerSize;
 #endif  // V8_COMPRESS_POINTERS
-  static const int kContinuationPreservedEmbedderDataOffset =
+  static const int kIsolateRegexpExecVectorArgumentOffset =
       kIsolateApiCallbackThunkArgumentOffset + kApiSystemPointerSize;
+  static const int kContinuationPreservedEmbedderDataOffset =
+      kIsolateRegexpExecVectorArgumentOffset + kApiSystemPointerSize;
   static const int kIsolateRootsOffset =
       kContinuationPreservedEmbedderDataOffset + kApiSystemPointerSize;
 
@@ -1375,7 +1379,10 @@ class V8_EXPORT StrongRootAllocatorBase {
 
  protected:
   explicit StrongRootAllocatorBase(Heap* heap) : heap_(heap) {}
+  explicit StrongRootAllocatorBase(LocalHeap* heap);
   explicit StrongRootAllocatorBase(Isolate* isolate);
+  explicit StrongRootAllocatorBase(v8::Isolate* isolate);
+  explicit StrongRootAllocatorBase(LocalIsolate* isolate);
 
   // Allocate/deallocate a range of n elements of type internal::Address.
   Address* allocate_impl(size_t n);
@@ -1395,9 +1402,8 @@ class StrongRootAllocator : private std::allocator<T> {
  public:
   using value_type = T;
 
-  explicit StrongRootAllocator(Heap* heap) {}
-  explicit StrongRootAllocator(Isolate* isolate) {}
-  explicit StrongRootAllocator(v8::Isolate* isolate) {}
+  template <typename HeapOrIsolateT>
+  explicit StrongRootAllocator(HeapOrIsolateT*) {}
   template <typename U>
   StrongRootAllocator(const StrongRootAllocator<U>& other) noexcept {}
 
@@ -1428,7 +1434,7 @@ struct MaybeDefineIteratorConcept {};
 template <typename Iterator>
 struct MaybeDefineIteratorConcept<
     Iterator, std::enable_if_t<kHaveIteratorConcept<Iterator>>> {
-  using iterator_concept = Iterator::iterator_concept;
+  using iterator_concept = typename Iterator::iterator_concept;
 };
 // Otherwise fall back to `std::iterator_traits<Iterator>` if possible.
 template <typename Iterator>
@@ -1441,7 +1447,8 @@ struct MaybeDefineIteratorConcept<
   // TODO(pkasting): Add this unconditionally after dropping support for old
   // libstdc++ versions.
 #if __has_include(<ranges>)
-  using iterator_concept = std::iterator_traits<Iterator>::iterator_concept;
+  using iterator_concept =
+      typename std::iterator_traits<Iterator>::iterator_concept;
 #endif
 };
 

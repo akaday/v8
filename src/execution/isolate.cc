@@ -60,6 +60,7 @@
 #include "src/execution/tiering-manager.h"
 #include "src/execution/v8threads.h"
 #include "src/execution/vm-state-inl.h"
+#include "src/flags/flags.h"
 #include "src/handles/global-handles-inl.h"
 #include "src/handles/persistent-handles.h"
 #include "src/heap/heap-inl.h"
@@ -2218,13 +2219,13 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
 #if V8_ENABLE_WEBASSEMBLY
   auto HandleStackSwitch = [&](StackFrameIterator& iter) {
     if (iter.wasm_stack() == nullptr) return;
-    auto switch_info = iter.wasm_stack()->stack_switch_info();
+    auto& switch_info = iter.wasm_stack()->stack_switch_info();
     if (!switch_info.has_value()) return;
     Tagged<Object> suspender_obj = root(RootIndex::kActiveSuspender);
     if (!IsUndefined(suspender_obj)) {
       // If the wasm-to-js wrapper was on a secondary stack and switched
       // to the central stack, handle the implicit switch back.
-      if (switch_info->source_fp == iter.frame()->fp()) {
+      if (switch_info.source_fp == iter.frame()->fp()) {
         thread_local_top()->is_on_central_stack_flag_ = false;
         stack_guard()->SetStackLimitForStackSwitching(
             reinterpret_cast<uintptr_t>(iter.wasm_stack()->jslimit()));
@@ -2254,7 +2255,8 @@ Tagged<Object> Isolate::UnwindAndFindHandler() {
        ; iter.Advance(), visited_frames++) {
 #if V8_ENABLE_WEBASSEMBLY
     if (iter.frame()->type() == StackFrame::STACK_SWITCH) {
-      if (catchable_by_js) {
+      if (catchable_by_js && iter.frame()->LookupCode()->builtin_id() !=
+                                 Builtin::kJSToWasmStressSwitchStacksAsm) {
         Tagged<Code> code =
             builtins()->code(Builtin::kWasmReturnPromiseOnSuspendAsm);
         HandlerTable table(code);
@@ -3981,10 +3983,6 @@ std::atomic<size_t> Isolate::non_disposed_isolates_;
 #endif  // DEBUG
 
 namespace {
-bool HasFlagThatRequiresSharedHeap() {
-  return v8_flags.shared_string_table || v8_flags.harmony_struct;
-}
-
 IsolateGroup* AcquireGroupForNewIsolate() {
   IsolateGroup* group = IsolateGroup::AcquireGlobal();
   if (group) return group;
@@ -4072,7 +4070,6 @@ Isolate::Isolate(IsolateGroup* isolate_group)
 #if defined(DEBUG) || defined(VERIFY_HEAP)
       num_active_deserializers_(0),
 #endif
-      rail_mode_(PERFORMANCE_ANIMATION),
       logger_(new Logger()),
       detailed_source_positions_for_profiling_(v8_flags.detailed_line_info),
       persistent_handles_list_(new PersistentHandlesList()),
@@ -5352,7 +5349,7 @@ bool Isolate::Init(SnapshotData* startup_snapshot_data,
 
   Isolate* use_shared_space_isolate = nullptr;
 
-  if (HasFlagThatRequiresSharedHeap()) {
+  if (v8_flags.shared_heap) {
     if (isolate_group_->has_shared_space_isolate()) {
       owns_shareable_data_ = false;
       use_shared_space_isolate = isolate_group_->shared_space_isolate();
@@ -7008,16 +7005,29 @@ void Isolate::DetachGlobal(Handle<Context> env) {
 void Isolate::UpdateLoadStartTime() { heap()->UpdateLoadStartTime(); }
 
 void Isolate::SetRAILMode(RAILMode rail_mode) {
-  RAILMode old_rail_mode = rail_mode_.load();
-  if (old_rail_mode != PERFORMANCE_LOAD && rail_mode == PERFORMANCE_LOAD) {
+  bool is_loading = rail_mode == PERFORMANCE_LOAD;
+  bool was_loading = is_loading_.exchange(is_loading);
+  if (is_loading && !was_loading) {
     heap()->NotifyLoadingStarted();
   }
-  rail_mode_.store(rail_mode);
-  if (old_rail_mode == PERFORMANCE_LOAD && rail_mode != PERFORMANCE_LOAD) {
+  if (!is_loading && was_loading) {
     heap()->NotifyLoadingEnded();
   }
   if (v8_flags.trace_rail) {
     PrintIsolate(this, "RAIL mode: %s\n", RAILModeName(rail_mode));
+  }
+}
+
+void Isolate::SetIsLoading(bool is_loading) {
+  is_loading_.store(is_loading);
+  if (is_loading) {
+    heap()->NotifyLoadingStarted();
+  } else {
+    heap()->NotifyLoadingEnded();
+  }
+  if (v8_flags.trace_rail) {
+    // TODO(crbug.com/373688984): Switch to a trace flag for loading state.
+    PrintIsolate(this, "RAIL mode: %s\n", is_loading ? "LOAD" : "ANIMATION");
   }
 }
 

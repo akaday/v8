@@ -797,13 +797,13 @@ void JSFunction::SetPrototype(DirectHandle<JSFunction> function,
 
 void JSFunction::SetInitialMap(Isolate* isolate,
                                DirectHandle<JSFunction> function,
-                               Handle<Map> map, Handle<HeapObject> prototype) {
+                               Handle<Map> map, Handle<JSPrototype> prototype) {
   SetInitialMap(isolate, function, map, prototype, function);
 }
 
 void JSFunction::SetInitialMap(Isolate* isolate,
                                DirectHandle<JSFunction> function,
-                               Handle<Map> map, Handle<HeapObject> prototype,
+                               Handle<Map> map, Handle<JSPrototype> prototype,
                                DirectHandle<JSFunction> constructor) {
   if (map->prototype() != *prototype) {
     Map::SetPrototype(isolate, map, prototype);
@@ -854,7 +854,7 @@ void JSFunction::EnsureHasInitialMap(Handle<JSFunction> function) {
       TERMINAL_FAST_ELEMENTS_KIND, inobject_properties);
 
   // Fetch or allocate prototype.
-  Handle<HeapObject> prototype;
+  Handle<JSPrototype> prototype;
   if (function->has_instance_prototype()) {
     prototype = handle(function->instance_prototype(), isolate);
     map->set_prototype(*prototype);
@@ -865,7 +865,10 @@ void JSFunction::EnsureHasInitialMap(Handle<JSFunction> function) {
   DCHECK(map->has_fast_object_elements());
 
   // Finally link initial map and constructor function.
-  DCHECK(IsJSReceiver(*prototype));
+  // This is a CHECK since the prototype could be Null according to the type
+  // system.
+  // TODO(leszeks): Figure out if this CHECK is needed.
+  CHECK(IsJSReceiver(*prototype));
   JSFunction::SetInitialMap(isolate, function, map, prototype);
   map->StartInobjectSlackTracking();
 }
@@ -988,7 +991,7 @@ bool CanSubclassHaveInobjectProperties(InstanceType instance_type) {
     case MAP_TYPE:
     case ODDBALL_TYPE:
     case PROPERTY_CELL_TYPE:
-    case CONST_TRACKING_LET_CELL_TYPE:
+    case CONTEXT_SIDE_PROPERTY_CELL_TYPE:
     case SHARED_FUNCTION_INFO_TYPE:
     case SYMBOL_TYPE:
     case ALLOCATION_SITE_TYPE:
@@ -1057,7 +1060,7 @@ bool FastInitializeDerivedMap(Isolate* isolate, Handle<JSFunction> new_target,
       Map::CopyInitialMap(isolate, constructor_initial_map, instance_size,
                           in_object_properties, unused_property_fields);
   map->set_new_target_is_base(false);
-  Handle<HeapObject> prototype(new_target->instance_prototype(), isolate);
+  Handle<JSPrototype> prototype(new_target->instance_prototype(), isolate);
   JSFunction::SetInitialMap(isolate, new_target, map, prototype, constructor);
   DCHECK(IsJSReceiver(new_target->instance_prototype()));
   map->set_construction_counter(Map::kNoSlackTracking);

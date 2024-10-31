@@ -756,8 +756,6 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   // Check that rdx is still valid, RecordWrite might have clobbered it.
   __ AssertGeneratorObject(rdx);
 
-  Register decompr_scratch1 = COMPRESS_POINTERS_BOOL ? r8 : no_reg;
-
   // Load suspended function and context.
   __ LoadTaggedField(rdi,
                      FieldOperand(rdx, JSGeneratorObject::kFunctionOffset));
@@ -787,31 +785,64 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   __ cmpq(rsp, __ StackLimitAsOperand(StackLimitKind::kRealStackLimit));
   __ j(below, &stack_overflow);
 
-  // Pop return address.
-  __ PopReturnAddressTo(rax);
-
   // ----------- S t a t e -------------
-  //  -- rax    : return address
   //  -- rdx    : the JSGeneratorObject to resume
   //  -- rdi    : generator function
   //  -- rsi    : generator context
   // -----------------------------------
 
-  // Copy the function arguments from the generator object's register file.
-  __ LoadTaggedField(rcx,
-                     FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
-  __ movzxwq(
-      rcx, FieldOperand(rcx, SharedFunctionInfo::kFormalParameterCountOffset));
-  __ decq(rcx);  // Exclude receiver.
-  __ LoadTaggedField(
-      rbx, FieldOperand(rdx, JSGeneratorObject::kParametersAndRegistersOffset));
+  Register decompr_scratch1 = COMPRESS_POINTERS_BOOL ? r8 : no_reg;
+  Register argc = kJavaScriptCallArgCountRegister;
+  Register index = r9;
+  Register return_address = r11;
+  Register params_array = rbx;
 
+  __ PopReturnAddressTo(return_address);
+
+  // Compute actual arguments count value as a formal parameter count without
+  // receiver, loaded from the dispatch table entry or shared function info.
+#if V8_ENABLE_LEAPTIERING
+  static_assert(kJavaScriptCallCodeStartRegister == rcx, "ABI mismatch");
+  static_assert(kJavaScriptCallDispatchHandleRegister == r15, "ABI mismatch");
+  __ movl(r15, FieldOperand(rdi, JSFunction::kDispatchHandleOffset));
+  __ LoadEntrypointAndParameterCountFromJSDispatchTable(rcx, argc, r15);
+#else
+  __ LoadTaggedField(argc,
+                     FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
+  __ movzxwq(argc, FieldOperand(
+                       argc, SharedFunctionInfo::kFormalParameterCountOffset));
+#endif  // V8_ENABLE_LEAPTIERING
+
+  // Сopy the function arguments from the generator object's register file.
   {
-    Label done_loop, loop;
+    Label push_arguments, done_loop, loop;
+
+#if V8_ENABLE_LEAPTIERING
+    // In case the formal parameter count is kDontAdaptArgumentsSentinel the
+    // actual arguments count should be set accordingly.
+    static_assert(kDontAdaptArgumentsSentinel < JSParameterCount(0));
+    __ cmpl(argc, Immediate(JSParameterCount(0)));
+    __ j(kGreaterThan, &push_arguments, Label::kNear);
+    __ movl(argc, Immediate(JSParameterCount(0)));
+    __ jmp(&done_loop, Label::kNear);
+#else
+    // Generator functions are always created from user code and thus the
+    // formal parameter count is never equal to kDontAdaptArgumentsSentinel,
+    // which is used only for certain non-generator builtin functions.
+#endif  // V8_ENABLE_LEAPTIERING
+
+    __ bind(&push_arguments);
+    __ LoadTaggedField(
+        params_array,
+        FieldOperand(rdx, JSGeneratorObject::kParametersAndRegistersOffset));
+
+    // Exclude receiver.
+    __ leal(index, Operand(argc, -1));
+
     __ bind(&loop);
-    __ decq(rcx);
-    __ j(less, &done_loop, Label::kNear);
-    __ PushTaggedField(FieldOperand(rbx, rcx, times_tagged_size,
+    __ decl(index);
+    __ j(kLessThan, &done_loop, Label::kNear);
+    __ PushTaggedField(FieldOperand(params_array, index, times_tagged_size,
                                     OFFSET_OF_DATA_START(FixedArray)),
                        decompr_scratch1);
     __ jmp(&loop);
@@ -825,17 +856,19 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
   // Underlying function needs to have bytecode available.
   if (v8_flags.debug_code) {
     Label is_baseline, is_unavailable, ok;
+    Register scratch = ReassignRegister(params_array);
     __ LoadTaggedField(
-        rcx, FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
-    GetSharedFunctionInfoBytecodeOrBaseline(masm, rcx, rcx, kScratchRegister,
-                                            &is_baseline, &is_unavailable);
+        scratch, FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
+    GetSharedFunctionInfoBytecodeOrBaseline(masm, scratch, scratch,
+                                            kScratchRegister, &is_baseline,
+                                            &is_unavailable);
     __ jmp(&ok);
 
     __ bind(&is_unavailable);
     __ Abort(AbortReason::kMissingBytecodeArray);
 
     __ bind(&is_baseline);
-    __ IsObjectType(rcx, CODE_TYPE, rcx);
+    __ IsObjectType(scratch, CODE_TYPE, scratch);
     __ Assert(equal, AbortReason::kMissingBytecodeArray);
 
     __ bind(&ok);
@@ -843,18 +876,18 @@ void Builtins::Generate_ResumeGeneratorTrampoline(MacroAssembler* masm) {
 
   // Resume (Ignition/TurboFan) generator object.
   {
-    __ PushReturnAddressFrom(rax);
-    // TODO(40931165): use parameter count from JSDispatchTable and validate
-    // that it matches the number of values in the JSGeneratorObject.
-    __ LoadTaggedField(
-        rax, FieldOperand(rdi, JSFunction::kSharedFunctionInfoOffset));
-    __ movzxwq(rax, FieldOperand(
-                        rax, SharedFunctionInfo::kFormalParameterCountOffset));
+    __ PushReturnAddressFrom(return_address);
     // We abuse new.target both to indicate that this is a resume call and to
     // pass in the generator object.  In ordinary calls, new.target is always
     // undefined because generator functions are non-constructable.
     static_assert(kJavaScriptCallCodeStartRegister == rcx, "ABI mismatch");
+#if V8_ENABLE_LEAPTIERING
+    // Actual arguments count and code start are already initialized above.
+    __ jmp(rcx);
+#else
+    // Actual arguments count is already initialized above.
     __ JumpJSFunction(rdi);
+#endif  // V8_ENABLE_LEAPTIERING
   }
 
   __ bind(&prepare_step_in_if_stepping);
@@ -1058,6 +1091,21 @@ void Builtins::Generate_InterpreterEntryTrampoline(
   GetSharedFunctionInfoBytecodeOrBaseline(
       masm, shared_function_info, kInterpreterBytecodeArrayRegister,
       kScratchRegister, &is_baseline, &compile_lazy);
+
+#ifdef V8_ENABLE_LEAPTIERING
+  // Validate the parameter count. This protects against an attacker swapping
+  // the bytecode (or the dispatch handle) such that the parameter count of the
+  // dispatch entry doesn't match the one of the BytecodeArray.
+  // TODO(saelo): instead of this validation step, it would probably be nicer
+  // if we could store the BytecodeArray directly in the dispatch entry and
+  // load it from there. Then we can easily guarantee that the parameter count
+  // of the entry matches the parameter count of the bytecode.
+  Register dispatch_handle = kJavaScriptCallDispatchHandleRegister;
+  __ LoadParameterCountFromJSDispatchTable(r8, dispatch_handle);
+  __ cmpw(r8, FieldOperand(kInterpreterBytecodeArrayRegister,
+                           BytecodeArray::kParameterSizeOffset));
+  __ SbxCheck(equal, AbortReason::kJSSignatureMismatch);
+#endif  // V8_ENABLE_LEAPTIERING
 
   Label push_stack_frame;
   Register feedback_vector = rbx;
@@ -1797,8 +1845,8 @@ void Builtins::Generate_InterpreterEnterAtBytecode(MacroAssembler* masm) {
 // static
 void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
   Register feedback_cell = r8;
-  Register feedback_vector = r11;
-  Register return_address = r15;
+  Register feedback_vector = r9;
+  Register return_address = r11;
 
 #ifdef DEBUG
   for (auto reg : BaselineOutOfLinePrologueDescriptor::registers()) {
@@ -1847,8 +1895,7 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
       __ Push(callee_js_function);  // Callee's JS function.
       __ Push(descriptor.GetRegisterParameter(
           BaselineOutOfLinePrologueDescriptor::
-              kJavaScriptCallArgCount));  // Actual argument
-                                          // count.
+              kJavaScriptCallArgCount));  // Actual argument count.
 
       // We'll use the bytecode for both code age/OSR resetting, and pushing
       // onto the frame, so load it into a register.
@@ -1912,9 +1959,17 @@ void Builtins::Generate_BaselineOutOfLinePrologue(MacroAssembler* masm) {
       FrameScope inner_frame_scope(masm, StackFrame::INTERNAL);
       // Save incoming new target or generator
       __ Push(new_target);
+#ifdef V8_ENABLE_LEAPTIERING
+      // No need to SmiTag as dispatch handles always look like Smis.
+      static_assert(kJSDispatchHandleShift > 0);
+      __ Push(kJavaScriptCallDispatchHandleRegister);
+#endif
       __ SmiTag(frame_size);
       __ Push(frame_size);
       __ CallRuntime(Runtime::kStackGuardWithGap, 1);
+#ifdef V8_ENABLE_LEAPTIERING
+      __ Pop(kJavaScriptCallDispatchHandleRegister);
+#endif
       __ Pop(new_target);
     }
 
@@ -3409,32 +3464,36 @@ void SwitchToAllocatedStack(MacroAssembler* masm, Register wasm_instance,
 }
 
 void SwitchBackAndReturnPromise(MacroAssembler* masm, Register tmp1,
-                                Register tmp2, Label* return_promise) {
+                                Register tmp2, wasm::Promise mode,
+                                Label* return_promise) {
   // The return value of the wasm function becomes the parameter of the
   // FulfillPromise builtin, and the promise is the return value of this
   // wrapper.
   static const Builtin_FulfillPromise_InterfaceDescriptor desc;
   static_assert(kReturnRegister0 == desc.GetRegisterParameter(0));
-
   Register promise = desc.GetRegisterParameter(0);
   Register return_value = desc.GetRegisterParameter(1);
-  __ movq(return_value, kReturnRegister0);
-  __ LoadRoot(promise, RootIndex::kActiveSuspender);
-  __ LoadTaggedField(
-      promise, FieldOperand(promise, WasmSuspenderObject::kPromiseOffset));
+  if (mode == wasm::kPromise) {
+    __ movq(return_value, kReturnRegister0);
+    __ LoadRoot(promise, RootIndex::kActiveSuspender);
+    __ LoadTaggedField(
+        promise, FieldOperand(promise, WasmSuspenderObject::kPromiseOffset));
+  }
+
   __ movq(kContextRegister,
           MemOperand(rbp, StackSwitchFrameConstants::kImplicitArgOffset));
   GetContextFromImplicitArg(masm, kContextRegister);
-
   ReloadParentContinuation(masm, promise, return_value, kContextRegister, tmp1,
                            tmp2);
   RestoreParentSuspender(masm, tmp1, tmp2);
 
-  __ Move(MemOperand(rbp, StackSwitchFrameConstants::kGCScanSlotCountOffset),
-          1);
-  __ Push(promise);
-  __ CallBuiltin(Builtin::kFulfillPromise);
-  __ Pop(promise);
+  if (mode == wasm::kPromise) {
+    __ Move(MemOperand(rbp, StackSwitchFrameConstants::kGCScanSlotCountOffset),
+            1);
+    __ Push(promise);
+    __ CallBuiltin(Builtin::kFulfillPromise);
+    __ Pop(promise);
+  }
 
   __ bind(return_promise);
 }
@@ -3487,7 +3546,8 @@ void GenerateExceptionHandlingLandingPad(MacroAssembler* masm,
   masm->isolate()->builtins()->SetJSPIPromptHandlerOffset(catch_handler);
 }
 
-void JSToWasmWrapperHelper(MacroAssembler* masm, bool stack_switch) {
+void JSToWasmWrapperHelper(MacroAssembler* masm, wasm::Promise mode) {
+  bool stack_switch = mode == wasm::kPromise || mode == wasm::kStressSwitch;
   __ EnterFrame(stack_switch ? StackFrame::STACK_SWITCH
                              : StackFrame::JS_TO_WASM);
 
@@ -3544,9 +3604,11 @@ void JSToWasmWrapperHelper(MacroAssembler* masm, bool stack_switch) {
   __ movq(params_end,
           MemOperand(wrapper_buffer,
                      JSToWasmWrapperFrameConstants::kWrapperBufferParamEnd));
-  __ movq(call_target,
-          MemOperand(wrapper_buffer,
-                     JSToWasmWrapperFrameConstants::kWrapperBufferCallTarget));
+
+  __ LoadWasmCodePointer(
+      call_target,
+      MemOperand(wrapper_buffer,
+                 JSToWasmWrapperFrameConstants::kWrapperBufferCallTarget));
 
   Register last_stack_param = rcx;
 
@@ -3597,7 +3659,7 @@ void JSToWasmWrapperHelper(MacroAssembler* masm, bool stack_switch) {
             0);
   }
 
-  __ call(call_target);
+  __ CallWasmCodePointer(call_target);
 
   __ movq(
       thread_in_wasm_flag_addr,
@@ -3651,7 +3713,7 @@ void JSToWasmWrapperHelper(MacroAssembler* masm, bool stack_switch) {
 
   Label return_promise;
   if (stack_switch) {
-    SwitchBackAndReturnPromise(masm, r8, rdi, &return_promise);
+    SwitchBackAndReturnPromise(masm, r8, rdi, mode, &return_promise);
   }
   __ bind(&suspend);
   __ endbr64();
@@ -3662,18 +3724,22 @@ void JSToWasmWrapperHelper(MacroAssembler* masm, bool stack_switch) {
 
   // Catch handler for the stack-switching wrapper: reject the promise with the
   // thrown exception.
-  if (stack_switch) {
+  if (mode == wasm::kPromise) {
     GenerateExceptionHandlingLandingPad(masm, &return_promise);
   }
 }
 }  // namespace
 
 void Builtins::Generate_JSToWasmWrapperAsm(MacroAssembler* masm) {
-  JSToWasmWrapperHelper(masm, false);
+  JSToWasmWrapperHelper(masm, wasm::kNoPromise);
 }
 
 void Builtins::Generate_WasmReturnPromiseOnSuspendAsm(MacroAssembler* masm) {
-  JSToWasmWrapperHelper(masm, true);
+  JSToWasmWrapperHelper(masm, wasm::kPromise);
+}
+
+void Builtins::Generate_JSToWasmStressSwitchStacksAsm(MacroAssembler* masm) {
+  JSToWasmWrapperHelper(masm, wasm::kStressSwitch);
 }
 
 void Builtins::Generate_WasmToJsWrapperAsm(MacroAssembler* masm) {
@@ -4045,23 +4111,6 @@ void SwitchFromTheCentralStackIfNeeded(MacroAssembler* masm,
 }
 
 }  // namespace
-
-void Builtins::Generate_WasmToOnHeapWasmToJsTrampoline(MacroAssembler* masm) {
-  // Load the code pointer from the WasmImportData and tail-call there.
-  Register import_data = wasm::kGpParamRegisters[0];
-#ifdef V8_ENABLE_SANDBOX
-  Register call_target = r11;  // Anything not in kGpParamRegisters.
-  __ LoadCodeEntrypointViaCodePointer(
-      call_target, FieldOperand(import_data, WasmImportData::kCodeOffset),
-      kWasmEntrypointTag);
-  __ jmp(call_target);
-#else
-  Register code = r11;  // Anything not in kGpParamRegisters.
-  __ LoadTaggedField(code,
-                     FieldOperand(import_data, WasmImportData::kCodeOffset));
-  __ jmp(FieldOperand(code, Code::kInstructionStartOffset));
-#endif
-}
 
 #endif  // V8_ENABLE_WEBASSEMBLY
 

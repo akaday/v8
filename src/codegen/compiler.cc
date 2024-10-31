@@ -44,6 +44,7 @@
 #include "src/heap/local-factory-inl.h"
 #include "src/heap/local-heap-inl.h"
 #include "src/heap/parked-scope-inl.h"
+#include "src/heap/visit-object.h"
 #include "src/init/bootstrapper.h"
 #include "src/interpreter/interpreter.h"
 #include "src/logging/counters-scopes.h"
@@ -1350,7 +1351,14 @@ MaybeHandle<Code> GetOrCompileOptimized(
   }
 
   // Do not optimize when debugger needs to hook into every call.
-  if (isolate->debug()->needs_check_on_function_call()) return {};
+  if (isolate->debug()->needs_check_on_function_call()) {
+    // Reset the OSR urgency to avoid triggering this compilation request on
+    // every iteration and thereby skipping other interrupts.
+    if (IsOSR(osr_offset)) {
+      function->feedback_vector()->reset_osr_urgency();
+    }
+    return {};
+  }
 
   // Do not optimize if we need to be able to set break points.
   if (shared->HasBreakInfo(isolate)) return {};
@@ -1709,7 +1717,6 @@ BackgroundCompileTask::BackgroundCompileTask(
       worker_thread_runtime_call_stats_(worker_thread_runtime_stats),
       timer_(timer),
       compilation_details_(nullptr),
-      input_shared_info_(shared_info),
       start_position_(shared_info->StartPosition()),
       end_position_(shared_info->EndPosition()),
       function_literal_id_(shared_info->function_literal_id()) {
@@ -1764,8 +1771,8 @@ namespace {
 // BackgroundMergeTask.
 class MergeAssumptionChecker final : public ObjectVisitor {
  public:
-  explicit MergeAssumptionChecker(PtrComprCageBase cage_base)
-      : cage_base_(cage_base) {}
+  explicit MergeAssumptionChecker(LocalIsolate* isolate)
+      : isolate_(isolate), cage_base_(isolate->cage_base()) {}
 
   void IterateObjects(Tagged<HeapObject> start) {
     QueueVisit(start, kNormalObject);
@@ -1796,7 +1803,7 @@ class MergeAssumptionChecker final : public ObjectVisitor {
         QueueVisit(constants, kConstantPool);
       }
       current_object_kind_ = pair.second;
-      current->IterateBody(cage_base_, this);
+      i::VisitObjectBody(isolate_, current, this);
       QueueVisit(current->map(), kNormalObject);
     }
   }
@@ -1874,6 +1881,7 @@ class MergeAssumptionChecker final : public ObjectVisitor {
 
   DisallowGarbageCollection no_gc_;
 
+  LocalIsolate* isolate_;
   PtrComprCageBase cage_base_;
   std::stack<std::pair<Tagged<HeapObject>, ObjectKind>> to_visit_;
 
@@ -2238,11 +2246,11 @@ class ConstantPoolPointerForwarder {
   PtrComprCageBase cage_base_;
   LocalHeap* local_heap_;
   DirectHandle<Script> old_script_;
-  std::vector<Handle<BytecodeArray>> bytecode_arrays_to_update_;
+  std::vector<IndirectHandle<BytecodeArray>> bytecode_arrays_to_update_;
 
   // Indicates whether we have any shared function info to forward.
   bool has_shared_function_info_to_forward_ = false;
-  std::unordered_map<int, Handle<ScopeInfo>> scope_infos_to_update_;
+  std::unordered_map<int, IndirectHandle<ScopeInfo>> scope_infos_to_update_;
 };
 
 void BackgroundMergeTask::SetUpOnMainThread(Isolate* isolate,

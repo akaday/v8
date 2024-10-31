@@ -61,7 +61,7 @@ const TSCallDescriptor* GetBuiltinCallDescriptor(Builtin name, Zone* zone) {
 class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
  public:
   WasmWrapperTSGraphBuilder(Zone* zone, Assembler& assembler,
-                            const CanonicalSig* sig, StubCallMode stub_mode)
+                            const CanonicalSig* sig)
       : WasmGraphBuilderBase(zone, assembler), sig_(sig) {}
 
   void AbortIfNot(V<Word32> condition, AbortReason abort_reason) {
@@ -212,9 +212,9 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
           case HeapType::kNone:
           case HeapType::kNoFunc:
           case HeapType::kNoExtern:
+            return ret;
           case HeapType::kExn:
           case HeapType::kNoExn:
-            return ret;
           case HeapType::kBottom:
           case HeapType::kTop:
           case HeapType::kStringViewWtf8:
@@ -250,12 +250,13 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         switch (type.heap_representation_non_shared()) {
           case HeapType::kExtern:
           case HeapType::kNoExtern:
-          case HeapType::kExn:
-          case HeapType::kNoExn:
             return ret;
           case HeapType::kNone:
           case HeapType::kNoFunc:
             return LOAD_ROOT(NullValue);
+          case HeapType::kExn:
+          case HeapType::kNoExn:
+            UNREACHABLE();
           case HeapType::kEq:
           case HeapType::kStruct:
           case HeapType::kArray:
@@ -744,8 +745,8 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
       const TSCallDescriptor* ts_call_descriptor = TSCallDescriptor::Create(
           call_descriptor, compiler::CanThrow::kYes,
           compiler::LazyDeoptOnThrow::kNo, __ graph_zone());
-      OpIndex call_target = __ RelocatableWasmBuiltinCallTarget(
-          Builtin::kWasmRethrowExplicitContext);
+      OpIndex call_target =
+          GetTargetForBuiltinCall(Builtin::kWasmRethrowExplicitContext);
       V<Context> context =
           __ Load(incoming_params[0], LoadOp::Kind::TaggedBase(),
                   MemoryRepresentation::TaggedPointer(),
@@ -940,7 +941,6 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
         switch (type.heap_representation_non_shared()) {
           // TODO(14034): Add more fast paths?
           case HeapType::kExtern:
-          case HeapType::kExn:
             if (type.kind() == kRef) {
               IF (UNLIKELY(__ TaggedEqual(input, LOAD_ROOT(NullValue)))) {
                 CallRuntime(__ phase_zone(), Runtime::kWasmThrowJSTypeError, {},
@@ -951,8 +951,11 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
             return input;
           case HeapType::kString:
             return BuildCheckString(input, context, type);
+          case HeapType::kExn:
+          case HeapType::kNoExn: {
+            UNREACHABLE();
+          }
           case HeapType::kNoExtern:
-          case HeapType::kNoExn:
           case HeapType::kNone:
           case HeapType::kNoFunc:
           case HeapType::kI31:
@@ -1180,17 +1183,25 @@ class WasmWrapperTSGraphBuilder : public WasmGraphBuilderBase {
     ScopedVar<WordPtr> old_sp_var(this, *old_sp);
     IF_NOT (__ IsSmi(value)) {
       IF (__ HasInstanceType(value, JS_PROMISE_TYPE)) {
+        OpIndex suspender = LOAD_ROOT(ActiveSuspender);
         V<Context> native_context =
             __ Load(import_data, LoadOp::Kind::TaggedBase(),
                     MemoryRepresentation::TaggedPointer(),
                     WasmImportData::kNativeContextOffset);
-        OpIndex suspender = LOAD_ROOT(ActiveSuspender);
-        // Trap if the suspender is undefined, which occurs when the export was
-        // not wrapped with WebAssembly.promising.
         IF (__ TaggedEqual(suspender, LOAD_ROOT(UndefinedValue))) {
           CallRuntime(__ phase_zone(), Runtime::kThrowBadSuspenderError, {},
                       native_context);
           __ Unreachable();
+        }
+        if (v8_flags.stress_wasm_stack_switching) {
+          V<Word32> for_stress_testing = __ TaggedEqual(
+              __ LoadTaggedField(suspender, WasmSuspenderObject::kResumeOffset),
+              LOAD_ROOT(UndefinedValue));
+          IF (for_stress_testing) {
+            CallRuntime(__ phase_zone(), Runtime::kThrowBadSuspenderError, {},
+                        native_context);
+            __ Unreachable();
+          }
         }
         // If {old_sp} is null, it must be that we were on the central stack
         // before entering the wasm-to-js wrapper, which means that there are JS
@@ -1307,8 +1318,7 @@ void BuildWasmWrapper(compiler::turboshaft::PipelineData* data,
                       WrapperCompilationInfo wrapper_info) {
   Zone zone(allocator, ZONE_NAME);
   WasmGraphBuilderBase::Assembler assembler(data, graph, graph, &zone);
-  WasmWrapperTSGraphBuilder builder(&zone, assembler, sig,
-                                    wrapper_info.stub_mode);
+  WasmWrapperTSGraphBuilder builder(&zone, assembler, sig);
   if (wrapper_info.code_kind == CodeKind::JS_TO_WASM_FUNCTION) {
     builder.BuildJSToWasmWrapper();
   } else if (wrapper_info.code_kind == CodeKind::WASM_TO_JS_FUNCTION) {

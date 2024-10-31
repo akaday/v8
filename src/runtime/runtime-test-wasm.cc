@@ -559,7 +559,7 @@ RUNTIME_FUNCTION(Runtime_WasmNumCodeSpaces) {
   } else if (IsWasmModuleObject(*argument)) {
     native_module = Cast<WasmModuleObject>(*argument)->native_module();
   } else {
-    UNREACHABLE();
+    return CrashUnlessFuzzing(isolate);
   }
   size_t num_spaces = native_module->GetNumberOfCodeSpacesForTesting();
   return *isolate->factory()->NewNumberFromSize(num_spaces);
@@ -712,6 +712,9 @@ RUNTIME_FUNCTION(Runtime_WasmNull) {
 static Tagged<Object> CreateWasmObject(Isolate* isolate,
                                        base::Vector<const uint8_t> module_bytes,
                                        bool is_struct) {
+  if (module_bytes.size() > v8_flags.wasm_max_module_size) {
+    return CrashUnlessFuzzing(isolate);
+  }
   // Create and compile the wasm module.
   wasm::ErrorThrower thrower(isolate, "CreateWasmObject");
   wasm::ModuleWireBytes bytes(base::VectorOf(module_bytes));

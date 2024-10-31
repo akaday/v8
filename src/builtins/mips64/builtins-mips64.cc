@@ -2946,6 +2946,10 @@ void Builtins::Generate_WasmReturnPromiseOnSuspendAsm(MacroAssembler* masm) {
   __ Trap();
 }
 
+void Builtins::Generate_JSToWasmStressSwitchStacksAsm(MacroAssembler* masm) {
+  __ Trap();
+}
+
 void Builtins::Generate_WasmToJsWrapperAsm(MacroAssembler* masm) {
   // Push registers in reverse order so that they are on the stack like
   // in an array, with the first item being at the lowest address.
@@ -2993,25 +2997,6 @@ void Builtins::Generate_WasmOnStackReplace(MacroAssembler* masm) {
 }
 
 void Builtins::Generate_JSToWasmWrapperAsm(MacroAssembler* masm) { __ Trap(); }
-
-void Builtins::Generate_WasmToOnHeapWasmToJsTrampoline(MacroAssembler* masm) {
-  // Load the code pointer from the WasmImportData and tail-call there.
-  Register import_data = wasm::kGpParamRegisters[0];
-  // Use t0 which is not in kGpParamRegisters.
-  Register call_target = t0;
-  UseScratchRegisterScope temps{masm};
-  temps.Exclude(call_target);
-#ifdef V8_ENABLE_SANDBOX
-  __ LoadCodeEntrypointViaCodePointer(
-      call_target, FieldMemOperand(import_data, WasmImportData::kCodeOffset),
-      kWasmEntrypointTag);
-#else
-  Register code = call_target;
-  __ Ld(code, FieldMemOperand(import_data, WasmImportData::kCodeOffset));
-  __ Ld(call_target, FieldMemOperand(code, Code::kInstructionStartOffset));
-#endif
-  __ Jump(call_target);
-}
 
 #endif  // V8_ENABLE_WEBASSEMBLY
 

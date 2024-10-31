@@ -1171,6 +1171,7 @@ namespace internal {
                                                                                \
   IF_WASM(ASM, JSToWasmWrapperAsm, WasmJSToWasmWrapper)                        \
   IF_WASM(ASM, WasmReturnPromiseOnSuspendAsm, WasmJSToWasmWrapper)             \
+  IF_WASM(ASM, JSToWasmStressSwitchStacksAsm, WasmJSToWasmWrapper)             \
   IF_WASM(ASM, WasmToJsWrapperAsm, WasmDummy)                                  \
   IF_WASM(TFC, WasmToJsWrapperCSA, WasmToJSWrapper)                            \
   IF_WASM(TFC, WasmToJsWrapperInvalidSig, WasmToJSWrapper)                     \
@@ -1187,7 +1188,6 @@ namespace internal {
   IF_WASM(TFC, WasmFloat64ToNumber, WasmFloat64ToTagged)                       \
   IF_WASM(TFC, WasmFloat64ToString, WasmFloat64ToTagged)                       \
   IF_WASM(TFC, JSToWasmLazyDeoptContinuation, SingleParameterOnStack)          \
-  IF_WASM(ASM, WasmToOnHeapWasmToJsTrampoline, WasmDummy)                      \
                                                                                \
   /* WeakMap */                                                                \
   TFJ(WeakMapConstructor, kDontAdaptArgumentsSentinel)                         \

@@ -29,6 +29,7 @@
 #include "src/wasm/std-object-sizes.h"
 #include "src/wasm/streaming-decoder.h"
 #include "src/wasm/wasm-code-manager.h"
+#include "src/wasm/wasm-code-pointer-table-inl.h"
 #include "src/wasm/wasm-engine.h"
 #include "src/wasm/wasm-feature-flags.h"
 #include "src/wasm/wasm-import-wrapper-cache.h"
@@ -1376,6 +1377,20 @@ class FeedbackMaker {
     // from the `WasmDispatchTable`, whose entries are always targets pointing
     // into the main jump table, so we only need to check against that.
 
+#ifdef V8_ENABLE_WASM_CODE_POINTER_TABLE
+    WasmCodePointerTable::Handle handle = target_truncated_smi.value();
+    Address entry = GetProcessWideWasmCodePointerTable()->GetEntrypoint(handle);
+    wasm::WasmCode* code =
+        wasm::GetWasmCodeManager()->LookupCode(nullptr, entry);
+    if (!code || code->native_module() != instance_data_->native_module() ||
+        code->IsAnonymous()) {
+      // Was not in the main table (e.g., because it's an imported function).
+      has_non_inlineable_targets_ = true;
+      return;
+    }
+    DCHECK_EQ(code->kind(), WasmCode::Kind::kWasmFunction);
+    uint32_t func_idx = code->index();
+#else
     Address jt_start = instance_data_->native_module()->jump_table_start();
     uint32_t jt_size = JumpTableAssembler::SizeForNumberOfSlots(
         instance_data_->module()->num_declared_functions);
@@ -1396,6 +1411,7 @@ class FeedbackMaker {
     uint32_t jt_slot_idx = JumpTableAssembler::SlotOffsetToIndex(jt_offset);
     uint32_t func_idx =
         instance_data_->module()->num_imported_functions + jt_slot_idx;
+#endif
     AddCall(func_idx, count);
   }
 
@@ -1667,6 +1683,11 @@ void TierUpAllForTesting(
       TierUpNowForTesting(isolate, trusted_instance_data, func_index);
     }
   }
+}
+
+void InitializeCompilationForTesting(NativeModule* native_module) {
+  Impl(native_module->compilation_state())
+      ->InitializeCompilationProgress(nullptr);
 }
 
 void PublishDetectedFeatures(WasmDetectedFeatures detected_features,
@@ -4063,7 +4084,7 @@ class TriggerCodeCachingAfterTimeoutTask : public v8::Task {
 }  // namespace
 
 void CompilationStateImpl::TriggerOutstandingCallbacks() {
-  DCHECK(!callbacks_mutex_.TryLock());
+  callbacks_mutex_.AssertHeld();
 
   base::EnumSet<CompilationEvent> triggered_events;
   if (outstanding_baseline_units_ == 0) {
@@ -4353,8 +4374,8 @@ WasmCode* CompileImportWrapperForTest(Isolate* isolate,
   }
 
   return GetWasmImportWrapperCache()->CompileWasmImportCallWrapper(
-      isolate, native_module, kind, sig, type_index, source_positions,
-      expected_arity, suspend);
+      isolate, kind, sig, type_index, source_positions, expected_arity,
+      suspend);
 }
 
 }  // namespace v8::internal::wasm

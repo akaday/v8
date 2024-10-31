@@ -1318,7 +1318,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
     return &isolate_data_.thread_local_top_;
   }
 
-  static uint32_t thread_in_wasm_flag_address_offset() {
+  static constexpr uint32_t thread_in_wasm_flag_address_offset() {
     // For WebAssembly trap handlers there is a flag in thread-local storage
     // which indicates that the executing thread executes WebAssembly code. To
     // access this flag directly from generated code, we store a pointer to the
@@ -1638,10 +1638,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   PersistentHandlesList* persistent_handles_list() const {
     return persistent_handles_list_.get();
   }
-
-#ifdef DEBUG
-  bool IsDeferredHandle(Address* location);
-#endif  // DEBUG
 
 #ifdef V8_ENABLE_SPARKPLUG
   baseline::BaselineBatchCompiler* baseline_batch_compiler() const {
@@ -1989,9 +1985,12 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   bool RunFilterETWSessionByURLCallback(const std::string& payload);
 #endif  // V8_OS_WIN && V8_ENABLE_ETW_STACK_WALKING
 
+  // Deprecated: prefer SetIsLoading.
   void SetRAILMode(RAILMode rail_mode);
 
-  RAILMode rail_mode() { return rail_mode_.load(); }
+  void SetIsLoading(bool is_loading);
+
+  bool is_loading() const { return is_loading_.load(); }
 
   void set_code_coverage_mode(debug::CoverageMode coverage_mode) {
     code_coverage_mode_.store(coverage_mode, std::memory_order_relaxed);
@@ -2000,6 +1999,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
     return code_coverage_mode_.load(std::memory_order_relaxed);
   }
 
+  // Deprecated: prefer SetIsLoading.
   void UpdateLoadStartTime();
 
   void SetPriority(v8::Isolate::Priority priority);
@@ -2489,7 +2489,7 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   DateCache* date_cache_ = nullptr;
   base::RandomNumberGenerator* random_number_generator_ = nullptr;
   base::RandomNumberGenerator* fuzzer_rng_ = nullptr;
-  std::atomic<RAILMode> rail_mode_;
+  std::atomic<bool> is_loading_{false};
   v8::Isolate::AtomicsWaitCallback atomics_wait_callback_ = nullptr;
   void* atomics_wait_callback_data_ = nullptr;
   PromiseHook promise_hook_ = nullptr;

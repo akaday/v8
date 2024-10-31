@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "src/api/api-arguments.h"
+#include "src/common/assert-scope.h"
 #include "src/common/globals.h"
 #include "src/diagnostics/disasm.h"
 #include "src/diagnostics/disassembler.h"
@@ -390,16 +391,33 @@ void HeapObject::HeapObjectPrint(std::ostream& os) {
   }
 }
 
+template <typename T>
+void PrintByteArrayElements(std::ostream& os, const T* array) {
+  int length = array->length();
+  int i = 0;
+  while (i < length) {
+    os << "   0x" << std::setfill('0') << std::setw(4) << std::hex << i << ":";
+    int line_end = std::min(i + 16, length);
+    for (; i < line_end; ++i) {
+      os << " " << std::setfill('0') << std::setw(2) << std::hex
+         << static_cast<int>(array->get(i));
+    }
+    os << "\n";
+  }
+}
+
 void ByteArray::ByteArrayPrint(std::ostream& os) {
   PrintHeader(os, "ByteArray");
   os << "\n - length: " << length()
      << "\n - begin: " << static_cast<void*>(begin()) << "\n";
+  PrintByteArrayElements(os, this);
 }
 
 void TrustedByteArray::TrustedByteArrayPrint(std::ostream& os) {
   PrintHeader(os, "TrustedByteArray");
   os << "\n - length: " << length()
      << "\n - begin: " << static_cast<void*>(begin()) << "\n";
+  PrintByteArrayElements(os, this);
 }
 
 void BytecodeArray::BytecodeArrayPrint(std::ostream& os) {
@@ -1463,7 +1481,7 @@ void PropertyArray::PropertyArrayPrint(std::ostream& os) {
 void FixedDoubleArray::FixedDoubleArrayPrint(std::ostream& os) {
   PrintHeader(os, "FixedDoubleArray");
   os << "\n - length: " << length();
-  DoPrintElements<FixedDoubleArray>(os, *this, length());
+  DoPrintElements<FixedDoubleArray>(os, this, length());
   os << "\n";
 }
 
@@ -2330,9 +2348,10 @@ void PropertyCell::PropertyCellPrint(std::ostream& os) {
   os << "\n";
 }
 
-void ConstTrackingLetCell::ConstTrackingLetCellPrint(std::ostream& os) {
-  PrintHeader(os, "ConstTrackingLetCell");
+void ContextSidePropertyCell::ContextSidePropertyCellPrint(std::ostream& os) {
+  PrintHeader(os, "ContextSidePropertyCell");
   os << "\n - dependent code: " << dependent_code();
+  os << "\n - cell_type: " << context_side_property_raw();
   os << "\n";
 }
 
@@ -2797,7 +2816,6 @@ void WasmResumeData::WasmResumeDataPrint(std::ostream& os) {
 
 void WasmImportData::WasmImportDataPrint(std::ostream& os) {
   PrintHeader(os, "WasmImportData");
-  IsolateForSandbox isolate = GetIsolateForSandbox(*this);
   os << "\n - native_context: " << Brief(native_context());
   os << "\n - callable: " << Brief(callable());
   os << "\n - instance_data: ";
@@ -2811,7 +2829,6 @@ void WasmImportData::WasmImportDataPrint(std::ostream& os) {
   os << "\n - call_origin: " << Brief(call_origin());
   os << "\n - sig: " << sig() << " (" << sig()->parameter_count() << " params, "
      << sig()->return_count() << " returns)";
-  os << "\n - code: " << Brief(code(isolate));
   os << "\n";
 }
 
@@ -3579,8 +3596,8 @@ void HeapObject::HeapObjectShortPrint(std::ostream& os) {
       os << '>';
       break;
     }
-    case CONST_TRACKING_LET_CELL_TYPE: {
-      os << "<ConstTrackingLetCell>";
+    case CONTEXT_SIDE_PROPERTY_CELL_TYPE: {
+      os << "<ContextSidePropertyCell>";
       break;
     }
     case ACCESSOR_INFO_TYPE: {
@@ -4056,6 +4073,8 @@ V8_EXPORT_PRIVATE extern i::Tagged<i::Object> _v8_internal_Get_Object(
 
 V8_DONT_STRIP_SYMBOL
 V8_EXPORT_PRIVATE extern void _v8_internal_Print_Object(void* object) {
+  i::AllowHandleDereference allow_deref;
+  i::AllowHandleDereferenceAllThreads allow_deref_all_threads;
   i::Print(GetObjectFromRaw(object));
 }
 

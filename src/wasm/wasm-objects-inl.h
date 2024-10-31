@@ -418,8 +418,6 @@ struct CastTraits<WasmExportedFunction> {
 
 // WasmImportData
 
-CODE_POINTER_ACCESSORS(WasmImportData, code, kCodeOffset)
-
 PROTECTED_POINTER_ACCESSORS(WasmImportData, instance_data,
                             WasmTrustedInstanceData,
                             kProtectedInstanceDataOffset)
@@ -457,9 +455,21 @@ wasm::CanonicalTypeIndex WasmExportedFunctionData::sig_index() const {
       static_cast<uint32_t>(canonical_type_index())};
 }
 
+bool WasmExportedFunctionData::is_promising() const {
+  return WasmFunctionData::PromiseField::decode(js_promise_flags()) ==
+         wasm::kPromise;
+}
+
 // WasmJSFunctionData
 wasm::CanonicalTypeIndex WasmJSFunctionData::sig_index() const {
   return wasm::CanonicalTypeIndex{static_cast<uint32_t>(canonical_sig_index())};
+}
+PROTECTED_POINTER_ACCESSORS(WasmJSFunctionData, protected_offheap_data,
+                            TrustedManaged<WasmJSFunctionData::OffheapData>,
+                            kProtectedOffheapDataOffset)
+
+WasmJSFunctionData::OffheapData* WasmJSFunctionData::offheap_data() const {
+  return protected_offheap_data()->get().get();
 }
 
 // WasmJSFunction
@@ -552,7 +562,7 @@ bool WasmTableObject::is_in_bounds(uint32_t entry_index) {
 }
 
 bool WasmTableObject::is_table64() const {
-  return index_type() == wasm::IndexType::kI64;
+  return address_type() == wasm::AddressType::kI64;
 }
 
 std::optional<uint64_t> WasmTableObject::maximum_length_u64() const {
@@ -579,7 +589,7 @@ std::optional<uint64_t> WasmTableObject::maximum_length_u64() const {
 bool WasmMemoryObject::has_maximum_pages() { return maximum_pages() >= 0; }
 
 bool WasmMemoryObject::is_memory64() const {
-  return index_type() == wasm::IndexType::kI64;
+  return address_type() == wasm::AddressType::kI64;
 }
 
 // static

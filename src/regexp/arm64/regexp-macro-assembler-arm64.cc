@@ -629,9 +629,10 @@ void RegExpMacroAssemblerARM64::CheckBitInTable(
   __ Mov(x11, Operand(table));
   if ((mode_ != LATIN1) || (kTableMask != String::kMaxOneByteCharCode)) {
     __ And(w10, current_character(), kTableMask);
-    __ Add(w10, w10, ByteArray::kHeaderSize - kHeapObjectTag);
+    __ Add(w10, w10, OFFSET_OF_DATA_START(ByteArray) - kHeapObjectTag);
   } else {
-    __ Add(w10, current_character(), ByteArray::kHeaderSize - kHeapObjectTag);
+    __ Add(w10, current_character(),
+           OFFSET_OF_DATA_START(ByteArray) - kHeapObjectTag);
   }
   __ Ldrb(w11, MemOperand(x11, w10, UXTW));
   CompareAndBranchOrBacktrack(w11, 0, ne, on_bit_set);
@@ -661,7 +662,7 @@ void RegExpMacroAssemblerARM64::SkipUntilBitInTable(
     // BoyerMooreLookahead::GetSkipTable in regexp-compiler.cc.
     VRegister nibble_table = v0;
     __ Mov(x8, Operand(nibble_table_array));
-    __ Add(x8, x8, ByteArray::kHeaderSize - kHeapObjectTag);
+    __ Add(x8, x8, OFFSET_OF_DATA_START(ByteArray) - kHeapObjectTag);
     __ Ld1(nibble_table.V16B(), MemOperand(x8));
     VRegister nibble_mask = v1;
     const uint64_t nibble_mask_imm = 0x0f0f0f0f'0f0f0f0f;
@@ -743,9 +744,10 @@ void RegExpMacroAssemblerARM64::SkipUntilBitInTable(
   Register index = w10;
   if ((mode_ != LATIN1) || (kTableMask != String::kMaxOneByteCharCode)) {
     __ And(index, current_character(), kTableMask);
-    __ Add(index, index, ByteArray::kHeaderSize - kHeapObjectTag);
+    __ Add(index, index, OFFSET_OF_DATA_START(ByteArray) - kHeapObjectTag);
   } else {
-    __ Add(index, current_character(), ByteArray::kHeaderSize - kHeapObjectTag);
+    __ Add(index, current_character(),
+           OFFSET_OF_DATA_START(ByteArray) - kHeapObjectTag);
   }
   Register found_in_table = w11;
   __ Ldrb(found_in_table, MemOperand(table_reg, index, UXTW));
@@ -905,7 +907,30 @@ void RegExpMacroAssemblerARM64::PopRegExpBasePointer(Register stack_pointer_out,
   StoreRegExpStackPointerToMemory(stack_pointer_out, scratch);
 }
 
-Handle<HeapObject> RegExpMacroAssemblerARM64::GetCode(Handle<String> source) {
+void RegExpMacroAssemblerARM64::EncodePositionIndependentRegisterOutput(
+    Register relative_out, Register absolute_in, Register scratch) {
+  DCHECK(!AreAliased(absolute_in, scratch));
+  // pi = memory_top - register_output_vector
+  ExternalReference ref =
+      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
+  __ Mov(scratch, ref);
+  __ Ldr(scratch, MemOperand(scratch));
+  __ Sub(relative_out, scratch, absolute_in);
+}
+
+void RegExpMacroAssemblerARM64::DecodePositionIndependentRegisterOutput(
+    Register absolute_out, Register relative_in, Register scratch) {
+  DCHECK(!AreAliased(relative_in, scratch));
+  // register_output_vector = memory_top - pi
+  ExternalReference ref =
+      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
+  __ Mov(scratch, ref);
+  __ Ldr(scratch, MemOperand(scratch));
+  __ Sub(absolute_out, scratch, relative_in);
+}
+
+Handle<HeapObject> RegExpMacroAssemblerARM64::GetCode(Handle<String> source,
+                                                      RegExpFlags flags) {
   Label return_w0;
   // Finalize code - write the entry point code now we know how many
   // registers we need.
@@ -950,7 +975,9 @@ Handle<HeapObject> RegExpMacroAssemblerARM64::GetCode(Handle<String> source) {
   __ Mov(start_offset(), w1);
   __ Mov(input_start(), x2);
   __ Mov(input_end(), x3);
-  __ Mov(output_array(), x4);
+  // Change the output_offsets_vector to be position-independent since the
+  // stack may grow and thus change location.
+  EncodePositionIndependentRegisterOutput(output_array(), x4, output_array());
 
   // Make sure the stack alignment will be respected.
   const int alignment = masm_->ActivationFrameAlignment();
@@ -1099,9 +1126,11 @@ Handle<HeapObject> RegExpMacroAssemblerARM64::GetCode(Handle<String> source) {
         __ Add(input_length, start_offset(), w10);
       }
 
+      DecodePositionIndependentRegisterOutput(output_array(), output_array(),
+                                              x10);
+
       // Copy the results to the output array from the cached registers first.
-      for (int i = 0;
-           (i < num_saved_registers_) && (i < kNumCachedRegisters);
+      for (int i = 0; (i < num_saved_registers_) && (i < kNumCachedRegisters);
            i += 2) {
         __ Mov(capture_start.X(), GetCachedRegister(i));
         __ Lsr(capture_end.X(), capture_start.X(), kWRegSizeInBits);
@@ -1145,8 +1174,7 @@ Handle<HeapObject> RegExpMacroAssemblerARM64::GetCode(Handle<String> source) {
                    MemOperand(base, -kSystemPointerSize, PostIndex));
             // Offsets need to be relative to the start of the string.
             if (mode_ == UC16) {
-              __ Add(capture_start,
-                     input_length,
+              __ Add(capture_start, input_length,
                      Operand(capture_start, ASR, 1));
               __ Add(capture_end, input_length, Operand(capture_end, ASR, 1));
             } else {
@@ -1178,6 +1206,9 @@ Handle<HeapObject> RegExpMacroAssemblerARM64::GetCode(Handle<String> source) {
           __ Cbnz(x11, &loop);
         }
       }
+
+      EncodePositionIndependentRegisterOutput(output_array(), output_array(),
+                                              x10);
     }
 
     if (global()) {
@@ -1314,10 +1345,9 @@ Handle<HeapObject> RegExpMacroAssemblerARM64::GetCode(Handle<String> source) {
           .set_empty_source_position_table()
           .Build();
   PROFILE(masm_->isolate(),
-          RegExpCodeCreateEvent(Cast<AbstractCode>(code), source));
+          RegExpCodeCreateEvent(Cast<AbstractCode>(code), source, flags));
   return Cast<HeapObject>(code);
 }
-
 
 void RegExpMacroAssemblerARM64::GoTo(Label* to) {
   BranchOrBacktrack(al, to);

@@ -228,12 +228,8 @@ class MaglevGraphBuilder {
         compilation_unit_->shared_function_info().scope_info(broker());
     if (scope_info.HasOuterScopeInfo()) {
       scope_info = scope_info.OuterScopeInfo(broker());
-      while (!scope_info.HasContext() && scope_info.HasOuterScopeInfo()) {
-        scope_info = scope_info.OuterScopeInfo(broker());
-      }
-      if (scope_info.HasContext()) {
-        graph()->record_scope_info(GetContext(), scope_info);
-      }
+      CHECK(scope_info.HasContext());
+      graph()->record_scope_info(GetContext(), scope_info);
     }
     if (compilation_unit_->is_osr()) {
       OsrAnalyzePrequel();
@@ -621,6 +617,9 @@ class MaglevGraphBuilder {
   bool IsOffsetAMergePoint(int offset) {
     return merge_states_[offset] != nullptr;
   }
+
+  ValueNode* GetContextAtDepth(ValueNode* context, size_t depth);
+  bool CheckContextExtensions(size_t depth);
 
   // Called when a block is killed by an unconditional eager deopt.
   ReduceResult EmitUnconditionalDeopt(DeoptimizeReason reason) {
@@ -1153,7 +1152,7 @@ class MaglevGraphBuilder {
                        compiler::OptionalScopeInfoRef scope_info);
   enum ContextSlotMutability { kImmutable, kMutable };
   bool TrySpecializeLoadContextSlotToFunctionContext(
-      ValueNode** context, size_t* depth, int slot_index,
+      ValueNode* context, int slot_index,
       ContextSlotMutability slot_mutability);
   ValueNode* LoadAndCacheContextSlot(ValueNode* context, int offset,
                                      ContextSlotMutability slot_mutability);
@@ -2159,7 +2158,7 @@ class MaglevGraphBuilder {
         DCHECK_EQ(vobject->type(), VirtualObject::kFixedDoubleArray);
         // The only offset we're allowed to read from the a FixedDoubleArray as
         // tagged field is the length.
-        CHECK_EQ(offset, FixedDoubleArray::kLengthOffset);
+        CHECK_EQ(offset, offsetof(FixedDoubleArray, length_));
         value = GetInt32Constant(vobject->double_elements_length());
       }
       if (v8_flags.trace_maglev_object_tracking) {

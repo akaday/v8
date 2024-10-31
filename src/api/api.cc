@@ -70,6 +70,7 @@
 #include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-write-barrier.h"
 #include "src/heap/safepoint.h"
+#include "src/heap/visit-object.h"
 #include "src/init/bootstrapper.h"
 #include "src/init/icu_util.h"
 #include "src/init/startup-data-util.h"
@@ -7215,7 +7216,7 @@ class ObjectVisitorDeepFreezer : i::ObjectVisitor {
     }
 
     DCHECK(!error_.has_value());
-    obj->Iterate(isolate_, this);
+    i::VisitObject(isolate_, obj, this);
     // Iterate sets error_ on failure. We should propagate errors.
     return !error_.has_value();
   }
@@ -7913,9 +7914,10 @@ Local<v8::Object> v8::Object::New(Isolate* v8_isolate,
                                   Local<Name>* names, Local<Value>* values,
                                   size_t length) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
-  auto proto = Utils::OpenHandle(*prototype_or_null);
-  if (!Utils::ApiCheck(i::IsNull(*proto) || IsJSReceiver(*proto),
-                       "v8::Object::New", "prototype must be null or object")) {
+  i::Handle<i::JSPrototype> proto;
+  if (!Utils::ApiCheck(
+          i::TryCast(Utils::OpenHandle(*prototype_or_null), &proto),
+          "v8::Object::New", "prototype must be null or object")) {
     return Local<v8::Object>();
   }
   API_RCS_SCOPE(i_isolate, Object, New);
@@ -7935,7 +7937,7 @@ Local<v8::Object> v8::Object::New(Isolate* v8_isolate,
                                      values, length);
     i::Handle<i::JSObject> obj =
         i_isolate->factory()->NewSlowJSObjectWithPropertiesAndElements(
-            i::Cast<i::HeapObject>(proto), properties, elements);
+            proto, properties, elements);
     return Utils::ToLocal(obj);
   } else {
     i::Handle<i::NameDictionary> properties =
@@ -7944,7 +7946,7 @@ Local<v8::Object> v8::Object::New(Isolate* v8_isolate,
                                      values, length);
     i::Handle<i::JSObject> obj =
         i_isolate->factory()->NewSlowJSObjectWithPropertiesAndElements(
-            i::Cast<i::HeapObject>(proto), properties, elements);
+            proto, properties, elements);
     return Utils::ToLocal(obj);
   }
 }
@@ -9238,6 +9240,42 @@ size_t v8::ArrayBufferView::CopyContents(void* dest, size_t byte_length) {
   return bytes_to_copy;
 }
 
+v8::MemorySpan<uint8_t> v8::ArrayBufferView::GetContents(
+    v8::MemorySpan<uint8_t> storage) {
+  internal::DisallowGarbageCollection no_gc;
+  auto self = Utils::OpenDirectHandle(this);
+  if (self->WasDetached()) {
+    return {};
+  }
+  if (internal::IsJSTypedArray(*self)) {
+    i::Tagged<i::JSTypedArray> typed_array = i::Cast<i::JSTypedArray>(*self);
+    if (typed_array->is_on_heap()) {
+      // The provided storage does not have enough capacity for the content of
+      // the TypedArray.
+      size_t bytes_to_copy = self->byte_length();
+      CHECK_LE(bytes_to_copy, storage.size());
+      const uint8_t* source =
+          reinterpret_cast<uint8_t*>(typed_array->DataPtr());
+      memcpy(reinterpret_cast<void*>(storage.data()), source, bytes_to_copy);
+      return {storage.data(), bytes_to_copy};
+    }
+    // The TypedArray already has off-heap storage, just return a view on it.
+    return {reinterpret_cast<uint8_t*>(typed_array->DataPtr()),
+            typed_array->GetByteLength()};
+  }
+  if (i::IsJSDataView(*self)) {
+    i::Tagged<i::JSDataView> data_view = i::Cast<i::JSDataView>(*self);
+    return {reinterpret_cast<uint8_t*>(data_view->data_pointer()),
+            data_view->byte_length()};
+  }
+  // Other types of ArrayBufferView always have an off-heap storage.
+  DCHECK(i::IsJSRabGsabDataView(*self));
+  i::Tagged<i::JSRabGsabDataView> data_view =
+      i::Cast<i::JSRabGsabDataView>(*self);
+  return {reinterpret_cast<uint8_t*>(data_view->data_pointer()),
+          data_view->GetByteLength()};
+}
+
 bool v8::ArrayBufferView::HasBuffer() const {
   auto self = Utils::OpenDirectHandle(this);
   if (!IsJSTypedArray(*self)) return true;
@@ -10311,11 +10349,8 @@ std::unique_ptr<MeasureMemoryDelegate> MeasureMemoryDelegate::Default(
     Isolate* v8_isolate, Local<Context> context,
     Local<Promise::Resolver> promise_resolver, MeasureMemoryMode mode) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
-  i::Handle<i::NativeContext> native_context(
-      Utils::OpenDirectHandle(*context)->native_context(), i_isolate);
-  auto js_promise = i::Cast<i::JSPromise>(Utils::OpenHandle(*promise_resolver));
-  return i_isolate->heap()->MeasureMemoryDelegate(native_context, js_promise,
-                                                  mode);
+  return i_isolate->heap()->CreateDefaultMeasureMemoryDelegate(
+      context, promise_resolver, mode);
 }
 
 void Isolate::GetStackSample(const RegisterState& state, void** frames,
@@ -10567,12 +10602,17 @@ void Isolate::ClearCachesForTesting() {
 
 void Isolate::SetRAILMode(RAILMode rail_mode) {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
-  return i_isolate->SetRAILMode(rail_mode);
+  i_isolate->SetRAILMode(rail_mode);
 }
 
 void Isolate::UpdateLoadStartTime() {
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
   i_isolate->UpdateLoadStartTime();
+}
+
+void Isolate::SetIsLoading(bool is_loading) {
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(this);
+  i_isolate->SetIsLoading(is_loading);
 }
 
 void Isolate::IncreaseHeapLimitForDebugging() {
@@ -11891,23 +11931,26 @@ char* HandleScopeImplementer::RestoreThread(char* storage) {
 
 void HandleScopeImplementer::IterateThis(RootVisitor* v) {
 #ifdef DEBUG
-  bool found_block_before_deferred = false;
+  bool found_block_before_persistent = false;
 #endif
   // Iterate over all handles in the blocks except for the last.
   for (int i = static_cast<int>(blocks()->size()) - 2; i >= 0; --i) {
     Address* block = blocks()->at(i);
     // Cast possibly-unrelated pointers to plain Address before comparing them
     // to avoid undefined behavior.
-    if (last_handle_before_deferred_block_ != nullptr &&
-        (reinterpret_cast<Address>(last_handle_before_deferred_block_) <=
+    if (HasPersistentScope() &&
+        (reinterpret_cast<Address>(
+             last_handle_before_persistent_block_.value()) <=
          reinterpret_cast<Address>(&block[kHandleBlockSize])) &&
-        (reinterpret_cast<Address>(last_handle_before_deferred_block_) >=
+        (reinterpret_cast<Address>(
+             last_handle_before_persistent_block_.value()) >=
          reinterpret_cast<Address>(block))) {
-      v->VisitRootPointers(Root::kHandleScope, nullptr, FullObjectSlot(block),
-                           FullObjectSlot(last_handle_before_deferred_block_));
-      DCHECK(!found_block_before_deferred);
+      v->VisitRootPointers(
+          Root::kHandleScope, nullptr, FullObjectSlot(block),
+          FullObjectSlot(last_handle_before_persistent_block_.value()));
+      DCHECK(!found_block_before_persistent);
 #ifdef DEBUG
-      found_block_before_deferred = true;
+      found_block_before_persistent = true;
 #endif
     } else {
       v->VisitRootPointers(Root::kHandleScope, nullptr, FullObjectSlot(block),
@@ -11915,8 +11958,9 @@ void HandleScopeImplementer::IterateThis(RootVisitor* v) {
     }
   }
 
-  DCHECK(last_handle_before_deferred_block_ == nullptr ||
-         found_block_before_deferred);
+  DCHECK_EQ(HasPersistentScope() &&
+                last_handle_before_persistent_block_.value() != nullptr,
+            found_block_before_persistent);
 
   // Iterate over live handles in the last block (if any).
   if (!blocks()->empty()) {
@@ -11955,6 +11999,7 @@ char* HandleScopeImplementer::Iterate(RootVisitor* v, char* storage) {
 std::unique_ptr<PersistentHandles> HandleScopeImplementer::DetachPersistent(
     Address* first_block) {
   std::unique_ptr<PersistentHandles> ph(new PersistentHandles(isolate()));
+  DCHECK(HasPersistentScope());
   DCHECK_NOT_NULL(first_block);
 
   Address* block_start;
@@ -11967,27 +12012,22 @@ std::unique_ptr<PersistentHandles> HandleScopeImplementer::DetachPersistent(
     blocks_.pop_back();
   } while (block_start != first_block);
 
-  // ph->blocks_ now contains the blocks installed on the
-  // HandleScope stack since BeginDeferredScope was called, but in
-  // reverse order.
+  // ph->blocks_ now contains the blocks installed on the HandleScope stack
+  // since BeginPersistentScope was called, but in reverse order.
 
   // Switch first and last blocks, such that the last block is the one
   // that is potentially half full.
-  DCHECK(!blocks_.empty() && !ph->blocks_.empty());
+  DCHECK(!ph->blocks_.empty());
   std::swap(ph->blocks_.front(), ph->blocks_.back());
 
   ph->block_next_ = isolate()->handle_scope_data()->next;
   block_start = ph->blocks_.back();
   ph->block_limit_ = block_start + kHandleBlockSize;
 
-  DCHECK_NOT_NULL(last_handle_before_deferred_block_);
-  last_handle_before_deferred_block_ = nullptr;
+  DCHECK_EQ(blocks_.empty(),
+            last_handle_before_persistent_block_.value() == nullptr);
+  last_handle_before_persistent_block_.reset();
   return ph;
-}
-
-void HandleScopeImplementer::BeginDeferredScope() {
-  DCHECK_NULL(last_handle_before_deferred_block_);
-  last_handle_before_deferred_block_ = isolate()->handle_scope_data()->next;
 }
 
 void InvokeAccessorGetterCallback(
@@ -12346,13 +12386,6 @@ TryToCopyAndConvertArrayToCppBuffer<CTypeInfoBuilder<double>::Build().GetId(),
       CTypeInfo(CTypeInfo::Type::kFloat64, CTypeInfo::SequenceType::kIsSequence)
           .GetId(),
       double>(src, dst, max_length);
-}
-
-std::string SourceLocation::ToString() const {
-  if (!file_) {
-    return {};
-  }
-  return std::string(function_) + "@" + file_ + ":" + std::to_string(line_);
 }
 
 }  // namespace v8

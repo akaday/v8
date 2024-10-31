@@ -1027,6 +1027,7 @@ external_cppgc_defines = [
   "CPPGC_CAGED_HEAP",
   "CPPGC_ENABLE_API_CHECKS",
   "CPPGC_ENABLE_LARGER_CAGE",
+  "CPPGC_ENABLE_SLOW_API_CHECKS",
   "CPPGC_POINTER_COMPRESSION",
   "CPPGC_SLIM_WRITE_BARRIER",
   "CPPGC_SUPPORTS_OBJECT_NAMES",
@@ -1037,6 +1038,10 @@ enabled_external_cppgc_defines = []
 
 if (cppgc_enable_api_checks) {
   enabled_external_cppgc_defines += [ "CPPGC_ENABLE_API_CHECKS" ]
+}
+cppgc_enable_slow_api_checks = v8_enable_slow_dchecks
+if (cppgc_enable_slow_api_checks) {
+  enabled_external_cppgc_defines += [ "CPPGC_ENABLE_SLOW_API_CHECKS" ]
 }
 if (cppgc_enable_object_names) {
   enabled_external_cppgc_defines += [ "CPPGC_SUPPORTS_OBJECT_NAMES" ]
@@ -3792,6 +3797,8 @@ v8_header_set("v8_internal_headers") {
     "src/heap/heap-layout.h",
     "src/heap/heap-utils-inl.h",
     "src/heap/heap-utils.h",
+    "src/heap/heap-visitor-inl.h",
+    "src/heap/heap-visitor.h",
     "src/heap/heap-write-barrier-inl.h",
     "src/heap/heap-write-barrier.h",
     "src/heap/heap.h",
@@ -3845,8 +3852,6 @@ v8_header_set("v8_internal_headers") {
     "src/heap/object-lock-inl.h",
     "src/heap/object-lock.h",
     "src/heap/object-stats.h",
-    "src/heap/objects-visiting-inl.h",
-    "src/heap/objects-visiting.h",
     "src/heap/page-metadata.h",
     "src/heap/paged-spaces-inl.h",
     "src/heap/paged-spaces.h",
@@ -3871,6 +3876,7 @@ v8_header_set("v8_internal_headers") {
     "src/heap/sweeper.h",
     "src/heap/traced-handles-marking-visitor.h",
     "src/heap/trusted-range.h",
+    "src/heap/visit-object.h",
     "src/heap/weak-object-worklists.h",
     "src/heap/young-generation-marking-visitor-inl.h",
     "src/heap/young-generation-marking-visitor.h",
@@ -5528,6 +5534,7 @@ v8_source_set("v8_base_without_compiler") {
     "src/heap/heap-layout-tracer.cc",
     "src/heap/heap-layout.cc",
     "src/heap/heap-verifier.cc",
+    "src/heap/heap-visitor.cc",
     "src/heap/heap-write-barrier.cc",
     "src/heap/heap.cc",
     "src/heap/incremental-marking-job.cc",
@@ -5555,7 +5562,6 @@ v8_source_set("v8_base_without_compiler") {
     "src/heap/mutable-page-metadata.cc",
     "src/heap/new-spaces.cc",
     "src/heap/object-stats.cc",
-    "src/heap/objects-visiting.cc",
     "src/heap/page-metadata.cc",
     "src/heap/paged-spaces.cc",
     "src/heap/pretenuring-handler.cc",
@@ -5570,6 +5576,7 @@ v8_source_set("v8_base_without_compiler") {
     "src/heap/sweeper.cc",
     "src/heap/traced-handles-marking-visitor.cc",
     "src/heap/trusted-range.cc",
+    "src/heap/visit-object.cc",
     "src/heap/weak-object-worklists.cc",
     "src/heap/zapping.cc",
     "src/ic/call-optimization.cc",

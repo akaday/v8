@@ -18,6 +18,7 @@
 #include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/safepoint.h"
+#include "src/heap/visit-object.h"
 #include "src/numbers/conversions.h"
 #include "src/objects/allocation-site-inl.h"
 #include "src/objects/api-callbacks.h"
@@ -2488,7 +2489,7 @@ bool V8HeapExplorer::IterateAndExtractReferences(
     // Extract unvisited fields as hidden references and restore tags
     // of visited fields.
     IndexedReferencesExtractor refs_extractor(this, obj, entry);
-    obj->Iterate(cage_base, &refs_extractor);
+    VisitObject(heap_->isolate(), obj, &refs_extractor);
 
 #if DEBUG
     // Ensure visited_fields_ doesn't leak to the next object.
@@ -3205,6 +3206,7 @@ bool HeapSnapshotGenerator::GenerateSnapshotAfterGC() {
   v8_heap_explorer_.MakeGlobalObjectTagMap(
       std::move(temporary_global_object_tags));
   snapshot_->AddSyntheticRootEntries();
+  v8_heap_explorer_.PopulateLineEnds();
   if (!FillReferences()) return false;
   snapshot_->FillChildren();
   snapshot_->RememberLastJSObjectId();

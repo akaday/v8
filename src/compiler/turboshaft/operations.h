@@ -2595,14 +2595,14 @@ struct ConstantOp : FixedArityOperationT<0, ConstantOp> {
     i::Float32 float32;
     i::Float64 float64;
     ExternalReference external;
-    Handle<HeapObject> handle;
+    IndirectHandle<HeapObject> handle;
 
     Storage(uint64_t integral = 0) : integral(integral) {}
     Storage(i::Tagged<Smi> smi) : integral(smi.ptr()) {}
     Storage(i::Float64 constant) : float64(constant) {}
     Storage(i::Float32 constant) : float32(constant) {}
     Storage(ExternalReference constant) : external(constant) {}
-    Storage(Handle<HeapObject> constant) : handle(constant) {}
+    Storage(IndirectHandle<HeapObject> constant) : handle(constant) {}
 
     inline bool operator==(const ConstantOp::Storage&) const {
       // It is tricky to implement this properly. We currently need to define
@@ -2637,8 +2637,9 @@ struct ConstantOp : FixedArityOperationT<0, ConstantOp> {
       case Kind::kTrustedHeapObject:
       case Kind::kRelocatableWasmCall:
       case Kind::kRelocatableWasmStubCall:
-      case Kind::kRelocatableWasmIndirectCallTarget:
         return RegisterRepresentation::WordPtr();
+      case Kind::kRelocatableWasmIndirectCallTarget:
+        return RegisterRepresentation::WasmCodePointer();
       case Kind::kSmi:
       case Kind::kHeapObject:
       case Kind::kNumber:
@@ -2718,7 +2719,7 @@ struct ConstantOp : FixedArityOperationT<0, ConstantOp> {
     return storage.external;
   }
 
-  Handle<i::HeapObject> handle() const {
+  IndirectHandle<i::HeapObject> handle() const {
     DCHECK(kind == Kind::kHeapObject || kind == Kind::kCompressedHeapObject ||
            kind == Kind::kTrustedHeapObject);
     return storage.handle;
@@ -4575,6 +4576,7 @@ struct ObjectIsOp : FixedArityOperationT<1, ObjectIsOp> {
     kReceiverOrNullOrUndefined,
     kSmi,
     kString,
+    kStringWrapper,
     kStringOrStringWrapper,
     kSymbol,
     kUndetectable,
@@ -5986,8 +5988,8 @@ struct TransitionAndStoreArrayElementOp
     kSignedSmallElement,
   };
   Kind kind;
-  MaybeHandle<Map> fast_map;
-  MaybeHandle<Map> double_map;
+  MaybeIndirectHandle<Map> fast_map;
+  MaybeIndirectHandle<Map> double_map;
 
   static constexpr OpEffects effects =
       OpEffects()
@@ -6010,8 +6012,8 @@ struct TransitionAndStoreArrayElementOp
   OpIndex value() const { return Base::input(2); }
 
   TransitionAndStoreArrayElementOp(OpIndex array, OpIndex index, OpIndex value,
-                                   Kind kind, MaybeHandle<Map> fast_map,
-                                   MaybeHandle<Map> double_map)
+                                   Kind kind, MaybeIndirectHandle<Map> fast_map,
+                                   MaybeIndirectHandle<Map> double_map)
       : Base(array, index, value),
         kind(kind),
         fast_map(fast_map),
@@ -6045,6 +6047,7 @@ struct TransitionAndStoreArrayElementOp
 
   auto options() const { return std::tuple{kind, fast_map, double_map}; }
 };
+
 V8_EXPORT_PRIVATE std::ostream& operator<<(
     std::ostream& os, TransitionAndStoreArrayElementOp::Kind kind);
 
@@ -8418,11 +8421,15 @@ struct Simd256LoadTransformOp
   V(F32x8Abs)                            \
   V(F32x8Neg)                            \
   V(F32x8Sqrt)                           \
+  V(F64x4Abs)                            \
+  V(F64x4Neg)                            \
   V(F64x4Sqrt)                           \
   V(I32x8UConvertF32x8)                  \
   V(I32x8SConvertF32x8)                  \
   V(F32x8UConvertI32x8)                  \
   V(F32x8SConvertI32x8)                  \
+  V(I32x8RelaxedTruncF32x8S)             \
+  V(I32x8RelaxedTruncF32x8U)             \
   FOREACH_SIMD_256_UNARY_SIGN_EXTENSION_OPCODE(V)
 
 struct Simd256UnaryOp : FixedArityOperationT<1, Simd256UnaryOp> {
@@ -9112,7 +9119,7 @@ constexpr size_t input_count(T) {
 // TODO(42203211): The first parameter should be just DirectHandle<T> and
 // MaybeDirectHandle<T> but now it does not compile with implicit Handle to
 // DirectHandle conversions.
-template <template <typename T> typename HandleType, typename T,
+template <template <typename> typename HandleType, typename T,
           typename = std::enable_if_t<std::disjunction_v<
               std::is_convertible<HandleType<T>, DirectHandle<T>>,
               std::is_convertible<HandleType<T>, MaybeDirectHandle<T>>>>>

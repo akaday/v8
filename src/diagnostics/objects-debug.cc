@@ -880,17 +880,13 @@ void PropertyArray::PropertyArrayVerify(Isolate* isolate) {
   }
 }
 
-void ByteArray::ByteArrayVerify(Isolate* isolate) {
-  CHECK(IsSmi(TaggedField<Object>::load(*this, kLengthOffset)));
-}
+void ByteArray::ByteArrayVerify(Isolate* isolate) {}
 
 void TrustedByteArray::TrustedByteArrayVerify(Isolate* isolate) {
   TrustedObjectVerify(isolate);
-  CHECK(IsSmi(TaggedField<Object>::load(*this, kLengthOffset)));
 }
 
 void FixedDoubleArray::FixedDoubleArrayVerify(Isolate* isolate) {
-  CHECK(IsSmi(TaggedField<Object>::load(*this, kLengthOffset)));
   for (int i = 0; i < length(); i++) {
     if (!is_the_hole(i)) {
       uint64_t value = get_representation(i);
@@ -912,18 +908,18 @@ void Context::ContextVerify(Isolate* isolate) {
     VerifyObjectField(isolate, OffsetOfElementAt(i));
   }
   if (IsScriptContext()) {
-    Tagged<Object> side_data = get(CONST_TRACKING_LET_SIDE_DATA_INDEX);
+    Tagged<Object> side_data = get(CONTEXT_SIDE_TABLE_PROPERTY_INDEX);
     CHECK(IsFixedArray(side_data));
     Tagged<FixedArray> side_data_array = Cast<FixedArray>(side_data);
     if (v8_flags.const_tracking_let) {
       for (int i = 0; i < side_data_array->length(); i++) {
         Tagged<Object> element = side_data_array->get(i);
         if (IsSmi(element)) {
-          CHECK(element == ConstTrackingLetCell::kConstMarker ||
-                element == ConstTrackingLetCell::kNonConstMarker);
+          CHECK(element.ToSmi().value() == ContextSidePropertyCell::kConst ||
+                element.ToSmi().value() == ContextSidePropertyCell::kOther);
         } else {
           // The slot contains `undefined` before the variable is initialized.
-          CHECK(IsUndefined(element) || IsConstTrackingLetCell(element));
+          CHECK(IsUndefined(element) || IsContextSidePropertyCell(element));
         }
       }
     } else {
@@ -1508,8 +1504,8 @@ void PropertyCell::PropertyCellVerify(Isolate* isolate) {
   CheckDataIsCompatible(property_details(), value());
 }
 
-void ConstTrackingLetCell::ConstTrackingLetCellVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::ConstTrackingLetCellVerify(*this, isolate);
+void ContextSidePropertyCell::ContextSidePropertyCellVerify(Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::ContextSidePropertyCellVerify(*this, isolate);
 }
 
 void TrustedObject::TrustedObjectVerify(Isolate* isolate) {
@@ -2477,7 +2473,8 @@ void WasmExportedFunctionData::WasmExportedFunctionDataVerify(
 #if V8_ENABLE_DRUMBRAKE
         wrapper->builtin_id() == Builtin::kGenericJSToWasmInterpreterWrapper ||
 #endif  // V8_ENABLE_DRUMBRAKE
-        wrapper->builtin_id() == Builtin::kWasmPromising)));
+        wrapper->builtin_id() == Builtin::kWasmPromising ||
+        wrapper->builtin_id() == Builtin::kWasmStressSwitch)));
 }
 
 #endif  // V8_ENABLE_WEBASSEMBLY

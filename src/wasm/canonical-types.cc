@@ -149,7 +149,7 @@ CanonicalTypeIndex TypeCanonicalizer::AddRecursiveGroup(
 }
 
 CanonicalTypeIndex TypeCanonicalizer::AddRecursiveGroup(CanonicalType type) {
-  DCHECK(!mutex_.TryLock());  // The caller must hold the mutex.
+  mutex_.AssertHeld();  // The caller must hold the mutex.
   CanonicalSingletonGroup group{type};
   if (CanonicalTypeIndex index = FindCanonicalGroup(group); index.valid()) {
     //  Make sure this signature can be looked up later.
@@ -224,6 +224,9 @@ CanonicalValueType TypeCanonicalizer::CanonicalizeValueType(
 
 bool TypeCanonicalizer::IsCanonicalSubtype(CanonicalTypeIndex sub_index,
                                            CanonicalTypeIndex super_index) {
+  // Fast path without synchronization:
+  if (sub_index == super_index) return true;
+
   // Multiple threads could try to register and access recursive groups
   // concurrently.
   // TODO(manoskouk): Investigate if we can improve this synchronization.
@@ -258,7 +261,7 @@ void TypeCanonicalizer::EmptyStorageForTesting() {
 TypeCanonicalizer::CanonicalType TypeCanonicalizer::CanonicalizeTypeDef(
     const WasmModule* module, TypeDefinition type,
     uint32_t recursive_group_start) {
-  DCHECK(!mutex_.TryLock());  // The caller must hold the mutex.
+  mutex_.AssertHeld();  // The caller must hold the mutex.
   CanonicalTypeIndex supertype{kNoSuperType};
   bool is_relative_supertype = false;
   if (type.supertype.index < recursive_group_start) {
@@ -357,6 +360,7 @@ size_t TypeCanonicalizer::GetCurrentNumberOfTypes() const {
 // static
 void TypeCanonicalizer::PrepareForCanonicalTypeId(Isolate* isolate,
                                                   CanonicalTypeIndex id) {
+  if (!id.valid()) return;
   Heap* heap = isolate->heap();
   // {2 * (id + 1)} needs to fit in an int.
   CHECK_LE(id.index, kMaxInt / 2 - 1);
@@ -409,6 +413,22 @@ bool TypeCanonicalizer::IsFunctionSignature(CanonicalTypeIndex index) const {
   base::MutexGuard mutex_guard(&mutex_);
   auto it = canonical_function_sigs_.find(index);
   return it != canonical_function_sigs_.end();
+}
+
+CanonicalTypeIndex TypeCanonicalizer::FindIndex_Slow(
+    const CanonicalSig* sig) const {
+  // TODO(jkummerow): Make this faster. The plan is to allocate an extra
+  // slot in the Zone immediately preceding each CanonicalSig, so we can
+  // get from the sig's address to that slot's address via pointer arithmetic.
+  // For now, just search through all known signatures, which is acceptable
+  // as long as only the type-reflection proposal needs this.
+  // TODO(42210967): Improve this before shipping Type Reflection.
+  for (auto [key, value] : canonical_function_sigs_) {
+    if (value == sig) return key;
+  }
+  // If callers have a CanonicalSig* to pass into this function, the
+  // type canonicalizer must know about this sig.
+  UNREACHABLE();
 }
 
 #ifdef DEBUG

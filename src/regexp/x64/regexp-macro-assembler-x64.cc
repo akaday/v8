@@ -594,7 +594,7 @@ void RegExpMacroAssemblerX64::CheckBitInTable(
     __ andq(rbx, Immediate(kTableMask));
     index = rbx;
   }
-  __ cmpb(FieldOperand(rax, index, times_1, ByteArray::kHeaderSize),
+  __ cmpb(FieldOperand(rax, index, times_1, OFFSET_OF_DATA_START(ByteArray)),
           Immediate(0));
   BranchOrBacktrack(not_equal, on_bit_set);
 }
@@ -623,7 +623,7 @@ void RegExpMacroAssemblerX64::SkipUntilBitInTable(
     // BoyerMooreLookahead::GetSkipTable in regexp-compiler.cc.
     XMMRegister nibble_table = xmm0;
     __ Move(r11, nibble_table_array);
-    __ Movdqu(nibble_table, FieldOperand(r11, ByteArray::kHeaderSize));
+    __ Movdqu(nibble_table, FieldOperand(r11, OFFSET_OF_DATA_START(ByteArray)));
     XMMRegister nibble_mask = xmm1;
     __ Move(r11, 0x0f0f0f0f'0f0f0f0f);
     __ movq(nibble_mask, r11);
@@ -711,8 +711,9 @@ void RegExpMacroAssemblerX64::SkipUntilBitInTable(
     __ movq(index, current_character());
     __ andq(index, Immediate(kTableMask));
   }
-  __ cmpb(FieldOperand(table_reg, index, times_1, ByteArray::kHeaderSize),
-          Immediate(0));
+  __ cmpb(
+      FieldOperand(table_reg, index, times_1, OFFSET_OF_DATA_START(ByteArray)),
+      Immediate(0));
   __ j(not_equal, &cont);
   AdvanceCurrentPosition(advance_by);
   __ jmp(&scalar_repeat);
@@ -897,7 +898,26 @@ void RegExpMacroAssemblerX64::PopRegExpBasePointer(Register stack_pointer_out,
   StoreRegExpStackPointerToMemory(stack_pointer_out, scratch);
 }
 
-Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
+void RegExpMacroAssemblerX64::EncodePositionIndependentRegisterOutput(
+    Register scratch_and_out) {
+  // pi = memory_top - register_output_vector
+  ExternalReference ref =
+      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
+  __ movq(scratch_and_out, __ ExternalReferenceAsOperand(ref, scratch_and_out));
+  __ subq(scratch_and_out, Operand(rbp, kRegisterOutputOffset));
+}
+
+void RegExpMacroAssemblerX64::DecodePositionIndependentRegisterOutput(
+    Register scratch_and_out) {
+  // register_output_vector = memory_top - pi
+  ExternalReference ref =
+      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
+  __ movq(scratch_and_out, __ ExternalReferenceAsOperand(ref, scratch_and_out));
+  __ subq(scratch_and_out, Operand(rbp, kRegisterOutputOffset));
+}
+
+Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source,
+                                                    RegExpFlags flags) {
   Label return_rax;
   // Finalize code - write the entry point code now we know how many registers
   // we need.
@@ -963,6 +983,11 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
   static_assert(kRegExpStackBasePointerOffset ==
                 kBacktrackCountOffset - kSystemPointerSize);
   __ Push(Immediate(0));  // The regexp stack base ptr.
+
+  // Change the output_offsets_vector to be position-independent since the
+  // stack may grow and thus change location.
+  EncodePositionIndependentRegisterOutput(rcx);
+  __ movq(Operand(rbp, kRegisterOutputOffset), rcx);
 
   // Initialize backtrack stack pointer. It must not be clobbered from here on.
   // Note the backtrack_stackpointer is *not* callee-saved.
@@ -1076,7 +1101,7 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
     if (num_saved_registers_ > 0) {
       // copy captures to output
       __ movq(rdx, Operand(rbp, kStartIndexOffset));
-      __ movq(rbx, Operand(rbp, kRegisterOutputOffset));
+      DecodePositionIndependentRegisterOutput(rbx);
       __ movq(rcx, Operand(rbp, kInputEndOffset));
       __ subq(rcx, Operand(rbp, kInputStartOffset));
       if (mode_ == UC16) {
@@ -1112,7 +1137,7 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
 
       __ movq(Operand(rbp, kNumOutputRegistersOffset), rcx);
       // Advance the location for output.
-      __ addq(Operand(rbp, kRegisterOutputOffset),
+      __ subq(Operand(rbp, kRegisterOutputOffset),
               Immediate(num_saved_registers_ * kIntSize));
 
       // Restore the original regexp stack pointer value (effectively, pop the
@@ -1267,7 +1292,8 @@ Handle<HeapObject> RegExpMacroAssemblerX64::GetCode(Handle<String> source) {
                           .set_self_reference(masm_.CodeObject())
                           .set_empty_source_position_table()
                           .Build();
-  PROFILE(isolate, RegExpCodeCreateEvent(Cast<AbstractCode>(code), source));
+  PROFILE(isolate,
+          RegExpCodeCreateEvent(Cast<AbstractCode>(code), source, flags));
   return Cast<HeapObject>(code);
 }
 

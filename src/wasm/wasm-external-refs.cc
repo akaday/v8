@@ -1011,25 +1011,24 @@ void switch_from_the_central_stack(Isolate* isolate) {
 }
 
 intptr_t switch_to_the_central_stack_for_js(Isolate* isolate, Address fp) {
-  auto active_suspender =
-      Cast<WasmSuspenderObject>(isolate->root(RootIndex::kActiveSuspender));
+  auto active_continuation = Cast<WasmContinuationObject>(
+      isolate->root(RootIndex::kActiveContinuation));
   ThreadLocalTop* thread_local_top = isolate->thread_local_top();
   StackGuard* stack_guard = isolate->stack_guard();
-  auto* stack = reinterpret_cast<StackMemory*>(
-      Cast<WasmContinuationObject>(active_suspender->continuation())->stack());
-  stack->set_stack_switch_info(fp, thread_local_top->central_stack_sp_);
+  auto* stack = reinterpret_cast<StackMemory*>(active_continuation->stack());
+  Address central_stack_sp = thread_local_top->central_stack_sp_;
+  stack->set_stack_switch_info(fp, central_stack_sp);
   stack_guard->SetStackLimitForStackSwitching(
       thread_local_top->central_stack_limit_);
   thread_local_top->is_on_central_stack_flag_ = true;
-  return thread_local_top->central_stack_sp_;
+  return central_stack_sp;
 }
 
 void switch_from_the_central_stack_for_js(Isolate* isolate) {
   // The stack only contains wasm frames after this JS call.
-  auto active_suspender =
-      Cast<WasmSuspenderObject>(isolate->root(RootIndex::kActiveSuspender));
-  auto* stack = reinterpret_cast<StackMemory*>(
-      Cast<WasmContinuationObject>(active_suspender->continuation())->stack());
+  auto active_continuation = Cast<WasmContinuationObject>(
+      isolate->root(RootIndex::kActiveContinuation));
+  auto* stack = reinterpret_cast<StackMemory*>(active_continuation->stack());
   stack->clear_stack_switch_info();
   ThreadLocalTop* thread_local_top = isolate->thread_local_top();
   thread_local_top->is_on_central_stack_flag_ = false;

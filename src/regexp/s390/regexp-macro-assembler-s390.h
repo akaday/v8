@@ -63,7 +63,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
   bool CheckSpecialClassRanges(StandardCharacterSet type,
                                Label* on_no_match) override;
   void Fail() override;
-  Handle<HeapObject> GetCode(Handle<String> source) override;
+  Handle<HeapObject> GetCode(Handle<String> source, RegExpFlags flags) override;
   void GoTo(Label* label) override;
   void IfRegisterGE(int reg, int comparand, Label* if_ge) override;
   void IfRegisterLT(int reg, int comparand, Label* if_lt) override;
@@ -202,6 +202,13 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
   void StoreRegExpStackPointerToMemory(Register src, Register scratch);
   void PushRegExpBasePointer(Register stack_pointer, Register scratch);
   void PopRegExpBasePointer(Register stack_pointer_out, Register scratch);
+
+  void EncodePositionIndependentRegisterOutput(Register relative_out,
+                                               Register absolute_in,
+                                               Register scratch);
+  void DecodePositionIndependentRegisterOutput(Register absolute_out,
+                                               Register relative_in,
+                                               Register scratch);
 
   Isolate* isolate() const { return masm_->isolate(); }
 

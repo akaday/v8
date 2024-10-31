@@ -106,7 +106,7 @@ void LiftoffAssembler::PatchPrepareStackFrame(
   // assembler to try to grow the buffer.
   constexpr int kAvailableSpace = 256;
   MacroAssembler patching_assembler(
-      nullptr, AssemblerOptions{}, CodeObjectRequired::kNo,
+      zone(), AssemblerOptions{}, CodeObjectRequired::kNo,
       ExternalAssemblerBuffer(buffer_start_ + offset, kAvailableSpace));
 
   if (V8_LIKELY(frame_size < 4 * KB)) {
@@ -2204,11 +2204,6 @@ void LiftoffAssembler::emit_f64x2_qfms(LiftoffRegister dst,
   VU.set(kScratchReg, E64, m1);
   vfnmsub_vv(src1.fp().toV(), src2.fp().toV(), src3.fp().toV());
   vmv_vv(dst.fp().toV(), src1.fp().toV());
-}
-
-void LiftoffAssembler::set_trap_on_oob_mem64(Register index, uint64_t oob_size,
-                                             uint64_t oob_index) {
-  UNREACHABLE();
 }
 
 void LiftoffAssembler::StackCheck(Label* ool_code) {

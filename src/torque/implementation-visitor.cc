@@ -674,6 +674,18 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
                      << "Descriptor::kJSTarget);\n";
         csa_ccfile() << "USE(" << generated_name << ");\n";
         expected_types = {TypeOracle::GetJSFunctionType()};
+      } else if (param_name == "dispatchHandle") {
+        if (V8_ENABLE_LEAPTIERING_BOOL) {
+          csa_ccfile() << "  TNode<JSDispatchHandleT> " << generated_name
+                       << " = "
+                          "UncheckedParameter<JSDispatchHandleT>(Descriptor::"
+                          "kJSDispatchHandle);\n";
+        } else {
+          csa_ccfile() << "  TNode<JSDispatchHandleT> " << generated_name
+                       << " = InvalidDispatchHandleConstant();\n";
+        }
+        csa_ccfile() << "USE(" << generated_name << ");\n";
+        expected_types = {TypeOracle::GetDispatchHandleType()};
       } else {
         Error(
             "Unexpected implicit parameter \"", param_name,
@@ -4733,10 +4745,7 @@ void CppClassGenerator::EmitStoreFieldStatement(
     stream << "  " << write_macro << "(*this, " << offset << ", "
            << value_to_write << ");\n";
     if (!is_smi) {
-      const char* write_barrier = strong_pointer
-                                      ? "CONDITIONAL_WRITE_BARRIER"
-                                      : "CONDITIONAL_WEAK_WRITE_BARRIER";
-      stream << "  " << write_barrier << "(*this, " << offset
+      stream << "  CONDITIONAL_WRITE_BARRIER(*this, " << offset
              << ", value, mode);\n";
     }
   }

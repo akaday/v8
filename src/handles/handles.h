@@ -227,8 +227,7 @@ class Handle final : public HandleBase {
   friend class MaybeHandle;
   // Casts are allowed to access location_.
   template <typename To, typename From>
-  friend inline Handle<To> Cast(Handle<From> value,
-                                const v8::SourceLocation& loc);
+  friend inline Handle<To> UncheckedCast(Handle<From> value);
 };
 
 template <typename T>
@@ -284,8 +283,16 @@ class V8_NODISCARD HandleScope {
   // created in the scope of the HandleScope) and returns
   // a Handle backed by the parent scope holding the
   // value of the argument handle.
-  template <typename T>
-  Handle<T> CloseAndEscape(Handle<T> handle_value);
+  //
+  // TODO(42203211): When direct handles are enabled, the version with
+  // HandleType = DirectHandle does not need to be called, as it simply
+  // closes the scope (which is done by the scope's destructor anyway)
+  // and returns its parameter. This will be cleaned up after direct
+  // handles ship.
+  template <typename T, template <typename> typename HandleType,
+            typename = std::enable_if_t<
+                std::is_convertible_v<HandleType<T>, DirectHandle<T>>>>
+  HandleType<T> CloseAndEscape(HandleType<T> handle_value);
 
   Isolate* isolate() { return isolate_; }
 
@@ -363,6 +370,11 @@ struct HandleScopeData final {
 };
 
 static_assert(HandleScopeData::kSizeInBytes == sizeof(HandleScopeData));
+
+template <typename T>
+struct is_direct_handle : public std::false_type {};
+template <typename T>
+static constexpr bool is_direct_handle_v = is_direct_handle<T>::value;
 
 #ifdef V8_ENABLE_DIRECT_HANDLE
 // Direct handles should not be used without conservative stack scanning,
@@ -568,8 +580,7 @@ class DirectHandle : public DirectHandleBase {
   friend class DirectHandleUnchecked<T>;
   // Casts are allowed to access obj_.
   template <typename To, typename From>
-  friend inline DirectHandle<To> Cast(DirectHandle<From> value,
-                                      const v8::SourceLocation& loc);
+  friend inline DirectHandle<To> UncheckedCast(DirectHandle<From> value);
 
   V8_INLINE explicit DirectHandle(Tagged<T> object);
 
@@ -581,15 +592,14 @@ class DirectHandle : public DirectHandleBase {
 };
 
 template <typename T>
-std::ostream& operator<<(std::ostream& os, DirectHandle<T> handle);
-
-template <typename T>
 IndirectHandle<T> indirect_handle(DirectHandle<T> handle) {
+  if (handle.is_null()) return IndirectHandle<T>();
   return IndirectHandle<T>(HandleBase::indirect_handle(handle.address()));
 }
 
 template <typename T>
 IndirectHandle<T> indirect_handle(DirectHandle<T> handle, Isolate* isolate) {
+  if (handle.is_null()) return IndirectHandle<T>();
   return IndirectHandle<T>(
       HandleBase::indirect_handle(handle.address(), isolate));
 }
@@ -597,6 +607,7 @@ IndirectHandle<T> indirect_handle(DirectHandle<T> handle, Isolate* isolate) {
 template <typename T>
 IndirectHandle<T> indirect_handle(DirectHandle<T> handle,
                                   LocalIsolate* isolate) {
+  if (handle.is_null()) return IndirectHandle<T>();
   return IndirectHandle<T>(
       HandleBase::indirect_handle(handle.address(), isolate));
 }
@@ -604,6 +615,7 @@ IndirectHandle<T> indirect_handle(DirectHandle<T> handle,
 template <typename T>
 IndirectHandle<T> indirect_handle(DirectHandle<T> handle,
                                   LocalHeap* local_heap) {
+  if (handle.is_null()) return IndirectHandle<T>();
   return IndirectHandle<T>(
       HandleBase::indirect_handle(handle.address(), local_heap));
 }
@@ -640,11 +652,9 @@ class StrongRootAllocator<DirectHandleUnchecked<T>>
   static_assert(std::is_standard_layout_v<value_type>);
   static_assert(sizeof(value_type) == sizeof(Address));
 
-  explicit StrongRootAllocator(Heap* heap) : StrongRootAllocatorBase(heap) {}
-  explicit StrongRootAllocator(Isolate* isolate)
-      : StrongRootAllocatorBase(isolate) {}
-  explicit StrongRootAllocator(v8::Isolate* isolate)
-      : StrongRootAllocatorBase(reinterpret_cast<Isolate*>(isolate)) {}
+  template <typename HeapOrIsolateT>
+  explicit StrongRootAllocator(HeapOrIsolateT* heap_or_isolate)
+      : StrongRootAllocatorBase(heap_or_isolate) {}
   template <typename U>
   StrongRootAllocator(const StrongRootAllocator<U>& other) noexcept
       : StrongRootAllocatorBase(other) {}
@@ -664,7 +674,8 @@ class DirectHandleVector {
 
   using allocator_type = internal::StrongRootAllocator<element_type>;
 
-  static allocator_type make_allocator(Isolate* isolate) noexcept {
+  template <typename IsolateT>
+  static allocator_type make_allocator(IsolateT* isolate) noexcept {
     return allocator_type(isolate);
   }
 
@@ -682,11 +693,14 @@ class DirectHandleVector {
       internal::WrappedIterator<typename vector_type::const_iterator,
                                 const DirectHandle<T>>;
 
-  explicit DirectHandleVector(Isolate* isolate)
+  template <typename IsolateT>
+  explicit DirectHandleVector(IsolateT* isolate)
       : backing_(make_allocator(isolate)) {}
-  DirectHandleVector(Isolate* isolate, size_t n)
+  template <typename IsolateT>
+  DirectHandleVector(IsolateT* isolate, size_t n)
       : backing_(n, make_allocator(isolate)) {}
-  DirectHandleVector(Isolate* isolate,
+  template <typename IsolateT>
+  DirectHandleVector(IsolateT* isolate,
                      std::initializer_list<DirectHandle<T>> init)
       : backing_(make_allocator(isolate)) {
     if (init.size() == 0) return;
@@ -838,8 +852,7 @@ class DirectHandle {
   friend class MaybeDirectHandle;
   // Casts are allowed to access handle_.
   template <typename To, typename From>
-  friend inline DirectHandle<To> Cast(DirectHandle<From> value,
-                                      const v8::SourceLocation& loc);
+  friend inline DirectHandle<To> UncheckedCast(DirectHandle<From> value);
   template <typename U>
   friend inline IndirectHandle<U> indirect_handle(DirectHandle<U>);
   template <typename U>
@@ -852,9 +865,6 @@ class DirectHandle {
 
   IndirectHandle<T> handle_;
 };
-
-template <typename T>
-std::ostream& operator<<(std::ostream& os, DirectHandle<T> handle);
 
 template <typename T>
 V8_INLINE IndirectHandle<T> indirect_handle(DirectHandle<T> handle) {
@@ -882,15 +892,24 @@ V8_INLINE IndirectHandle<T> indirect_handle(DirectHandle<T> handle,
 template <typename T>
 class DirectHandleVector : public std::vector<DirectHandle<T>> {
  public:
-  explicit DirectHandleVector(Isolate* isolate)
+  template <typename IsolateT>
+  explicit DirectHandleVector(IsolateT* isolate)
       : std::vector<DirectHandle<T>>() {}
-  DirectHandleVector(Isolate* isolate, size_t n)
+  template <typename IsolateT>
+  DirectHandleVector(IsolateT* isolate, size_t n)
       : std::vector<DirectHandle<T>>(n) {}
-  DirectHandleVector(Isolate* isolate,
+  template <typename IsolateT>
+  DirectHandleVector(IsolateT* isolate,
                      std::initializer_list<DirectHandle<T>> init)
       : std::vector<DirectHandle<T>>(init) {}
 };
 #endif  // V8_ENABLE_DIRECT_HANDLE
+
+template <typename T>
+std::ostream& operator<<(std::ostream& os, DirectHandle<T> handle);
+
+template <typename T>
+struct is_direct_handle<DirectHandle<T>> : public std::true_type {};
 
 }  // namespace internal
 }  // namespace v8

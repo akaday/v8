@@ -18,11 +18,13 @@ namespace internal {
 
 DEFINE_DEOPT_ELEMENT_ACCESSORS(FrameTranslation, DeoptimizationFrameTranslation)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(InlinedFunctionCount, Smi)
+DEFINE_DEOPT_ELEMENT_ACCESSORS(ProtectedLiteralArray,
+                               ProtectedDeoptimizationLiteralArray)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(LiteralArray, DeoptimizationLiteralArray)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(OsrBytecodeOffset, Smi)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(OsrPcOffset, Smi)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(OptimizationId, Smi)
-DEFINE_DEOPT_ELEMENT_ACCESSORS(SharedFunctionInfoWrapper,
+DEFINE_DEOPT_ELEMENT_ACCESSORS(WrappedSharedFunctionInfo,
                                SharedFunctionInfoWrapperOrSmi)
 DEFINE_DEOPT_ELEMENT_ACCESSORS(InliningPositions,
                                TrustedPodArray<InliningPosition>)
@@ -38,7 +40,7 @@ DEFINE_DEOPT_ENTRY_ACCESSORS(NodeId, Smi)
 #endif  // DEBUG
 
 Tagged<SharedFunctionInfo> DeoptimizationData::GetSharedFunctionInfo() const {
-  return Cast<i::SharedFunctionInfoWrapper>(SharedFunctionInfoWrapper())
+  return Cast<i::SharedFunctionInfoWrapper>(WrappedSharedFunctionInfo())
       ->shared_info();
 }
 
@@ -103,19 +105,6 @@ inline void DeoptimizationLiteralArray::set(int index, Tagged<Object> value) {
   TrustedWeakFixedArray::set(index, maybe);
 }
 
-inline DeoptimizationFrameTranslation::DeoptimizationFrameTranslation(
-    Address ptr)
-    : TrustedByteArray(ptr) {}
-
-uint32_t DeoptimizationFrameTranslation::get_int(int offset) const {
-  DCHECK_LE(offset + sizeof(uint32_t), length());
-  return ReadField<uint32_t>(OffsetOfElementAt(offset));
-}
-
-void DeoptimizationFrameTranslation::set_int(int offset, uint32_t value) {
-  DCHECK_LE(offset + sizeof(uint32_t), length());
-  WriteField<uint32_t>(OffsetOfElementAt(offset), value);
-}
 }  // namespace internal
 }  // namespace v8
 

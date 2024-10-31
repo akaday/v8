@@ -44,7 +44,8 @@ class RegExpMacroAssembler {
   RegExpMacroAssembler(Isolate* isolate, Zone* zone);
   virtual ~RegExpMacroAssembler() = default;
 
-  virtual Handle<HeapObject> GetCode(Handle<String> source) = 0;
+  virtual Handle<HeapObject> GetCode(Handle<String> source,
+                                     RegExpFlags flags) = 0;
 
   // This function is called when code generation is aborted, so that
   // the assembler could clean up internal data structures.
@@ -358,7 +359,8 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
                      int* output, int output_size, Isolate* isolate,
                      Tagged<IrRegExpData> regexp_data);
 
-  ZoneUnorderedMap<uint32_t, Handle<FixedUInt16Array>> range_array_cache_;
+  ZoneUnorderedMap<uint32_t, IndirectHandle<FixedUInt16Array>>
+      range_array_cache_;
 };
 
 }  // namespace internal

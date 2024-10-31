@@ -6823,6 +6823,7 @@ void MacroAssembler::AssertBoundFunction(Register object) {
 #ifdef V8_ENABLE_DEBUG_CODE
 void MacroAssembler::AssertSmiOrHeapObjectInMainCompressionCage(
     Register object) {
+#if V8_TARGET_ARCH_RISCV64
   if (!PointerCompressionIsEnabled()) return;
   if (!v8_flags.debug_code) return;
   ASM_CODE_COMMENT(this);
@@ -6843,6 +6844,7 @@ void MacroAssembler::AssertSmiOrHeapObjectInMainCompressionCage(
         Operand(kPtrComprCageBaseRegister));
   bind(&ok);
   Pop(object, zero_reg);
+#endif
 }
 #endif  // V8_ENABLE_DEBUG_CODE
 
@@ -7345,11 +7347,13 @@ void MacroAssembler::LoadEntrypointAndParameterCountFromJSDispatchTable(
 
 #if V8_TARGET_ARCH_RISCV64
 void MacroAssembler::LoadTaggedField(const Register& destination,
-                                     const MemOperand& field_operand) {
+                                     const MemOperand& field_operand,
+                                     Trapper&& trapper) {
   if (COMPRESS_POINTERS_BOOL) {
-    DecompressTagged(destination, field_operand);
+    DecompressTagged(destination, field_operand,
+                     std::forward<Trapper>(trapper));
   } else {
-    Ld(destination, field_operand);
+    Ld(destination, field_operand, std::forward<Trapper>(trapper));
   }
 }
 
@@ -7409,9 +7413,10 @@ void MacroAssembler::DecompressTaggedSigned(const Register& destination,
 }
 
 void MacroAssembler::DecompressTagged(const Register& destination,
-                                      const MemOperand& field_operand) {
+                                      const MemOperand& field_operand,
+                                      Trapper&& trapper) {
   ASM_CODE_COMMENT(this);
-  Lwu(destination, field_operand);
+  Lwu(destination, field_operand, std::forward<Trapper>(trapper));
   AddWord(destination, kPtrComprCageBaseRegister, destination);
 }
 

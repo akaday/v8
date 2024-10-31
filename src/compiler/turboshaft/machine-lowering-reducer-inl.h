@@ -507,6 +507,7 @@ class MachineLoweringReducer : public Next {
                                 (kIsNotStringMask | kIsNotInternalizedMask)),
             kInternalizedTag);
       }
+      case ObjectIsOp::Kind::kStringWrapper:
       case ObjectIsOp::Kind::kStringOrStringWrapper: {
         Label<Word32> done(this);
 
@@ -519,8 +520,10 @@ class MachineLoweringReducer : public Next {
         V<Map> map = __ LoadMapField(input);
         V<Word32> instance_type = __ LoadInstanceTypeField(map);
 
-        GOTO_IF(__ Uint32LessThan(instance_type, FIRST_NONSTRING_TYPE), done,
-                1);
+        if (kind == ObjectIsOp::Kind::kStringOrStringWrapper) {
+          GOTO_IF(__ Uint32LessThan(instance_type, FIRST_NONSTRING_TYPE), done,
+                  1);
+        }
         GOTO_IF_NOT(__ Word32Equal(instance_type, JS_PRIMITIVE_WRAPPER_TYPE),
                     done, 0);
 
@@ -1577,7 +1580,7 @@ class MachineLoweringReducer : public Next {
       case NewArrayOp::Kind::kDouble: {
         size_log2 = kDoubleSizeLog2;
         array_map = factory_->fixed_double_array_map();
-        access = {kTaggedBase, FixedDoubleArray::kHeaderSize,
+        access = {kTaggedBase, OFFSET_OF_DATA_START(FixedDoubleArray),
                   compiler::Type::NumberOrHole(), MachineType::Float64(),
                   kNoWriteBarrier};
         the_hole_value = __ template LoadField<Float64>(
@@ -2273,6 +2276,8 @@ class MachineLoweringReducer : public Next {
   }
 
   V<Word32> REDUCE(StringLength)(V<String> string) {
+    // TODO(dmercadier): Somewhere (maybe not here but instead in a new
+    // SimplifiedOptimizationReducer?), constant fold StringLength(Constant).
     return __ template LoadField<Word32>(string,
                                          AccessBuilder::ForStringLength());
   }

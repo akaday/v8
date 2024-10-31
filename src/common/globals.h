@@ -1140,6 +1140,10 @@ using JSAnyNotNumber =
     Union<BigInt, String, Symbol, Boolean, Null, Undefined, JSReceiver>;
 using JSCallable =
     Union<JSBoundFunction, JSFunction, JSObject, JSProxy, JSWrappedFunction>;
+// Object prototypes are either JSReceivers or null -- they are not allowed to
+// be any other primitive value.
+using JSPrototype = Union<JSReceiver, Null>;
+
 using MaybeObject = MaybeWeak<Object>;
 using HeapObjectReference = MaybeWeak<HeapObject>;
 
@@ -2716,6 +2720,8 @@ using WasmCodePointer = uint32_t;
 #else
 using WasmCodePointer = Address;
 #endif
+
+enum CallJumpMode { kCall, kTailCall };
 
 }  // namespace internal
 

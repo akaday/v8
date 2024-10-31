@@ -78,7 +78,7 @@ WasmCode* WasmImportWrapperCache::ModificationScope::AddWrapper(
     WritableJitAllocation jit_allocation =
         ThreadIsolation::RegisterJitAllocation(
             reinterpret_cast<Address>(code_space.begin()), code_space.size(),
-            ThreadIsolation::JitAllocationType::kWasmCode);
+            ThreadIsolation::JitAllocationType::kWasmCode, true);
     jit_allocation.CopyCode(0, desc.buffer, desc.instr_size);
 
     intptr_t delta = code_space.begin() - desc.buffer;
@@ -137,12 +137,11 @@ WasmCode* WasmImportWrapperCache::ModificationScope::AddWrapper(
 }
 
 WasmCode* WasmImportWrapperCache::CompileWasmImportCallWrapper(
-    Isolate* isolate, NativeModule* native_module, ImportCallKind kind,
-    const CanonicalSig* sig, CanonicalTypeIndex sig_index,
-    bool source_positions, int expected_arity, Suspend suspend) {
-  CompilationEnv env = CompilationEnv::ForModule(native_module);
+    Isolate* isolate, ImportCallKind kind, const CanonicalSig* sig,
+    CanonicalTypeIndex sig_index, bool source_positions, int expected_arity,
+    Suspend suspend) {
   WasmCompilationResult result = compiler::CompileWasmImportCallWrapper(
-      &env, kind, sig, source_positions, expected_arity, suspend);
+      kind, sig, source_positions, expected_arity, suspend);
   WasmCode* wasm_code;
   {
     ModificationScope cache_scope(this);
@@ -163,8 +162,7 @@ WasmCode* WasmImportWrapperCache::CompileWasmImportCallWrapper(
       wasm_code->instructions().length());
   isolate->counters()->wasm_reloc_size()->Increment(
       wasm_code->reloc_info().length());
-  if (V8_UNLIKELY(native_module->log_code())) {
-    GetWasmEngine()->LogWrapperCode(base::VectorOf(&wasm_code, 1));
+  if (GetWasmEngine()->LogWrapperCode(wasm_code)) {
     // Log the code immediately in the current isolate.
     GetWasmEngine()->LogOutstandingCodesForIsolate(isolate);
   }

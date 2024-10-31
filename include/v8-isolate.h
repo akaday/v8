@@ -549,6 +549,8 @@ class V8_EXPORT Isolate {
     kDocumentAllLegacyConstruct = 142,
     kConsoleContext = 143,
     kWasmImportedStringsUtf8 = 144,
+    kResizableArrayBuffer = 145,
+    kGrowableSharedArrayBuffer = 146,
 
     // If you add new values here, you'll also need to update Chromium's:
     // web_feature.mojom, use_counter_callback.cc, and enums.xml. V8 changes to
@@ -1447,12 +1449,28 @@ class V8_EXPORT Isolate {
    * This is an unfinished experimental feature. Semantics and implementation
    * may change frequently.
    */
+  V8_DEPRECATE_SOON("Use SetIsLoading instead")
   void SetRAILMode(RAILMode rail_mode);
 
   /**
    * Update load start time of the RAIL mode
    */
+  V8_DEPRECATE_SOON("Use SetIsLoading instead")
   void UpdateLoadStartTime();
+
+  /**
+   * Optional notification to tell V8 whether the embedder is currently loading
+   * resources. If the embedder uses this notification, it should call
+   * SetIsLoading(true) when loading starts and SetIsLoading(false) when it
+   * ends.
+   * It's valid to call SetIsLoading(true) again while loading, which will
+   * update the timestamp when V8 considers the load started. Calling
+   * SetIsLoading(false) while not loading does nothing.
+   * V8 uses these notifications to guide heuristics.
+   * This is an unfinished experimental feature. Semantics and implementation
+   * may change frequently.
+   */
+  void SetIsLoading(bool is_loading);
 
   /**
    * Optional notification to tell V8 the current isolate is used for debugging

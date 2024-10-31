@@ -155,7 +155,7 @@ base::Vector<const uint8_t> WasmModuleObject::GetRawFunctionName(
 Handle<WasmTableObject> WasmTableObject::New(
     Isolate* isolate, Handle<WasmTrustedInstanceData> trusted_data,
     wasm::ValueType type, uint32_t initial, bool has_maximum, uint64_t maximum,
-    DirectHandle<Object> initial_value, wasm::IndexType index_type) {
+    DirectHandle<Object> initial_value, wasm::AddressType address_type) {
   CHECK(type.is_object_reference());
 
   DCHECK_LE(initial, v8_flags.wasm_max_table_size);
@@ -167,7 +167,7 @@ Handle<WasmTableObject> WasmTableObject::New(
   DirectHandle<UnionOf<Undefined, Number, BigInt>> max =
       isolate->factory()->undefined_value();
   if (has_maximum) {
-    if (index_type == wasm::IndexType::kI32) {
+    if (address_type == wasm::AddressType::kI32) {
       DCHECK_GE(kMaxUInt32, maximum);
       max = isolate->factory()->NewNumber(maximum);
     } else {
@@ -190,11 +190,11 @@ Handle<WasmTableObject> WasmTableObject::New(
   table_obj->set_current_length(initial);
   table_obj->set_maximum_length(*max);
   table_obj->set_raw_type(static_cast<int>(type.raw_bit_field()));
-  table_obj->set_index_type(index_type);
-  table_obj->set_padding_for_index_type_0(0);
-  table_obj->set_padding_for_index_type_1(0);
+  table_obj->set_address_type(address_type);
+  table_obj->set_padding_for_address_type_0(0);
+  table_obj->set_padding_for_address_type_1(0);
 #if TAGGED_SIZE_8_BYTES
-  table_obj->set_padding_for_index_type_2(0);
+  table_obj->set_padding_for_address_type_2(0);
 #endif
 
   table_obj->set_uses(ReadOnlyRoots(isolate).empty_fixed_array());
@@ -629,7 +629,6 @@ void WasmTableObject::UpdateDispatchTables(
         Cast<WasmInstanceObject>(uses->get(i + TableUses::kInstanceOffset))
             ->trusted_data(isolate),
         isolate);
-    wasm::NativeModule* native_module = trusted_instance_data->native_module();
     wasm::WasmImportWrapperCache* cache = wasm::GetWasmImportWrapperCache();
     auto kind = wasm::ImportCallKind::kWasmToCapi;
     int param_count = static_cast<int>(sig->parameter_count());
@@ -637,7 +636,7 @@ void WasmTableObject::UpdateDispatchTables(
         cache->MaybeGet(kind, sig_index, param_count, wasm::kNoSuspend);
     if (wasm_code == nullptr) {
       wasm::WasmCompilationResult result =
-          compiler::CompileWasmCapiCallWrapper(native_module, sig);
+          compiler::CompileWasmCapiCallWrapper(sig);
       {
         wasm::WasmImportWrapperCache::ModificationScope cache_scope(cache);
         wasm::WasmImportWrapperCache::CacheKey key(kind, sig_index, param_count,
@@ -829,7 +828,7 @@ void SetInstanceMemory(Tagged<WasmTrustedInstanceData> trusted_instance_data,
 Handle<WasmMemoryObject> WasmMemoryObject::New(Isolate* isolate,
                                                Handle<JSArrayBuffer> buffer,
                                                int maximum,
-                                               wasm::IndexType index_type) {
+                                               wasm::AddressType address_type) {
   Handle<JSFunction> memory_ctor(
       isolate->native_context()->wasm_memory_constructor(), isolate);
 
@@ -837,11 +836,11 @@ Handle<WasmMemoryObject> WasmMemoryObject::New(Isolate* isolate,
       isolate->factory()->NewJSObject(memory_ctor, AllocationType::kOld));
   memory_object->set_array_buffer(*buffer);
   memory_object->set_maximum_pages(maximum);
-  memory_object->set_index_type(index_type);
-  memory_object->set_padding_for_index_type_0(0);
-  memory_object->set_padding_for_index_type_1(0);
+  memory_object->set_address_type(address_type);
+  memory_object->set_padding_for_address_type_0(0);
+  memory_object->set_padding_for_address_type_1(0);
 #if TAGGED_SIZE_8_BYTES
-  memory_object->set_padding_for_index_type_2(0);
+  memory_object->set_padding_for_address_type_2(0);
 #endif
   memory_object->set_instances(ReadOnlyRoots{isolate}.empty_weak_array_list());
 
@@ -864,10 +863,10 @@ Handle<WasmMemoryObject> WasmMemoryObject::New(Isolate* isolate,
 
 MaybeHandle<WasmMemoryObject> WasmMemoryObject::New(
     Isolate* isolate, int initial, int maximum, SharedFlag shared,
-    wasm::IndexType index_type) {
+    wasm::AddressType address_type) {
   bool has_maximum = maximum != kNoMaximum;
 
-  int engine_maximum = index_type == wasm::IndexType::kI64
+  int engine_maximum = address_type == wasm::AddressType::kI64
                            ? static_cast<int>(wasm::max_mem64_pages())
                            : static_cast<int>(wasm::max_mem32_pages());
 
@@ -907,7 +906,7 @@ MaybeHandle<WasmMemoryObject> WasmMemoryObject::New(
 
   std::unique_ptr<BackingStore> backing_store =
       BackingStore::AllocateWasmMemory(isolate, initial, heuristic_maximum,
-                                       index_type == wasm::IndexType::kI32
+                                       address_type == wasm::AddressType::kI32
                                            ? WasmMemoryFlag::kWasmMemory32
                                            : WasmMemoryFlag::kWasmMemory64,
                                        shared);
@@ -919,7 +918,7 @@ MaybeHandle<WasmMemoryObject> WasmMemoryObject::New(
           ? isolate->factory()->NewJSSharedArrayBuffer(std::move(backing_store))
           : isolate->factory()->NewJSArrayBuffer(std::move(backing_store));
 
-  return New(isolate, buffer, maximum, index_type);
+  return New(isolate, buffer, maximum, address_type);
 }
 
 void WasmMemoryObject::UseInInstance(
@@ -1185,7 +1184,6 @@ Address WasmCodePointerAddress(WasmCodePointer pointer) {
 void ImportedFunctionEntry::SetGenericWasmToJs(
     Isolate* isolate, DirectHandle<JSReceiver> callable, wasm::Suspend suspend,
     const wasm::CanonicalSig* sig) {
-  DCHECK(wasm::GetTypeCanonicalizer()->Contains(sig));
   WasmCodePointer wrapper_entry;
   if (wasm::IsJSCompatibleSignature(sig)) {
     DCHECK(
@@ -1218,7 +1216,6 @@ void ImportedFunctionEntry::SetCompiledWasmToJs(
     Isolate* isolate, DirectHandle<JSReceiver> callable,
     wasm::WasmCode* wasm_to_js_wrapper, wasm::Suspend suspend,
     const wasm::CanonicalSig* sig) {
-  DCHECK(wasm::GetTypeCanonicalizer()->Contains(sig));
   TRACE_IFT("Import callable 0x%" PRIxPTR "[%d] = {callable=0x%" PRIxPTR
             ", target=%p}\n",
             instance_data_->ptr(), index_, callable->ptr(),
@@ -1582,10 +1579,12 @@ WasmCodePointer WasmTrustedInstanceData::GetCallTarget(uint32_t func_index) {
   if (func_index < native_module->num_imported_functions()) {
     return dispatch_table_for_imports()->target(func_index);
   }
-  return v8_flags.wasm_jitless
-             ? 0
-             : jump_table_start() +
-                   JumpTableOffset(native_module->module(), func_index);
+
+  if (v8_flags.wasm_jitless) {
+    return 0;
+  }
+
+  return native_module->GetIndirectCallTarget(func_index);
 }
 
 // static
@@ -1830,11 +1829,17 @@ Handle<JSFunction> WasmInternalFunction::GetOrCreateExternal(
         Builtin::kGenericJSToWasmInterpreterWrapper);
 #endif  // V8_ENABLE_DRUMBRAKE
   } else if (CanUseGenericJsToWasmWrapper(module, sig)) {
-    wrapper_code = isolate->builtins()->code_handle(Builtin::kJSToWasmWrapper);
+    if (v8_flags.stress_wasm_stack_switching) {
+      wrapper_code =
+          isolate->builtins()->code_handle(Builtin::kWasmStressSwitch);
+    } else {
+      wrapper_code =
+          isolate->builtins()->code_handle(Builtin::kJSToWasmWrapper);
+    }
   } else {
     // The wrapper does not exist yet; compile it now.
     wrapper_code = wasm::JSToWasmWrapperCompilationUnit::CompileJSToWasmWrapper(
-        isolate, sig, sig_id, module);
+        isolate, sig, sig_id);
     // This should have added an entry in the per-isolate cache.
     DCHECK_EQ(MakeWeak(wrapper_code->wrapper()),
               isolate->heap()->js_to_wasm_wrappers()->get(wrapper_index));
@@ -1920,11 +1925,9 @@ void WasmTrustedInstanceData::ImportWasmJSFunctionIntoTable(
   wasm::Suspend suspend = function_data->GetSuspend();
   wasm::WasmCodeRefScope code_ref_scope;
 
-  const wasm::WasmModule* module = trusted_instance_data->module();
-  SBXCHECK(FunctionSigMatchesTable(sig_id, module, table_index));
-  auto module_canonical_ids = module->isorecursive_canonical_type_ids;
+  SBXCHECK(FunctionSigMatchesTable(sig_id, trusted_instance_data->module(),
+                                   table_index));
 
-  wasm::NativeModule* native_module = trusted_instance_data->native_module();
   wasm::ResolvedWasmImport resolved({}, -1, callable, sig, sig_id,
                                     wasm::WellKnownImport::kUninstantiated);
   wasm::ImportCallKind kind = resolved.kind();
@@ -1947,8 +1950,9 @@ void WasmTrustedInstanceData::ImportWasmJSFunctionIntoTable(
     call_target =
         wasm::GetBuiltinCodePointer<Builtin::kWasmToJsWrapperAsm>(isolate);
   } else {
-    wasm_code = cache->CompileWasmImportCallWrapper(isolate, native_module,
-                                                    kind, sig, sig_id, false,
+    constexpr bool kNoSourcePositions = false;
+    wasm_code = cache->CompileWasmImportCallWrapper(isolate, kind, sig, sig_id,
+                                                    kNoSourcePositions,
                                                     expected_arity, suspend);
     call_target = wasm_code->code_pointer();
   }
@@ -2534,7 +2538,8 @@ bool WasmExportedFunction::IsWasmExportedFunction(Tagged<Object> object) {
       code->builtin_id() != Builtin::kGenericJSToWasmInterpreterWrapper &&
 #endif  // V8_ENABLE_DRUMBRAKE
       code->builtin_id() != Builtin::kJSToWasmWrapper &&
-      code->builtin_id() != Builtin::kWasmPromising) {
+      code->builtin_id() != Builtin::kWasmPromising &&
+      code->builtin_id() != Builtin::kWasmStressSwitch) {
     return false;
   }
   DCHECK(js_function->shared()->HasWasmExportedFunctionData());
@@ -2592,7 +2597,8 @@ Handle<WasmExportedFunction> WasmExportedFunction::New(
            export_wrapper->builtin_id() ==
                Builtin::kGenericJSToWasmInterpreterWrapper ||
 #endif  // V8_ENABLE_DRUMBRAKE
-           export_wrapper->builtin_id() == Builtin::kWasmPromising)));
+           export_wrapper->builtin_id() == Builtin::kWasmPromising ||
+           export_wrapper->builtin_id() == Builtin::kWasmStressSwitch)));
   int func_index = internal_function->function_index();
   Factory* factory = isolate->factory();
   DirectHandle<Map> rtt;
@@ -2752,7 +2758,7 @@ Handle<WasmJSFunction> WasmJSFunction::New(Isolate* isolate,
   }
 
   DirectHandle<Code> js_to_js_wrapper_code =
-      wasm::IsJSCompatibleSignature(sig)
+      wasm::IsJSCompatibleSignature(canonical_sig)
           ? isolate->builtins()->code_handle(Builtin::kJSToJSWrapper)
           : isolate->builtins()->code_handle(Builtin::kJSToJSWrapperInvalidSig);
 
@@ -2769,55 +2775,51 @@ Handle<WasmJSFunction> WasmJSFunction::New(Isolate* isolate,
   DirectHandle<WasmInternalFunction> internal_function{
       function_data->internal(), isolate};
 
-  if (!wasm::IsJSCompatibleSignature(sig)) {
+  if (!wasm::IsJSCompatibleSignature(canonical_sig)) {
     internal_function->set_call_target(
         wasm::GetBuiltinCodePointer<Builtin::kWasmToJsWrapperInvalidSig>(
             isolate));
-  } else if (UseGenericWasmToJSWrapper(wasm::kDefaultImportCallKind,
-                                       canonical_sig, suspend)) {
-    internal_function->set_call_target(
-        wasm::GetBuiltinCodePointer<Builtin::kWasmToJsWrapperAsm>(isolate));
+#if V8_ENABLE_DRUMBRAKE
+  } else if (v8_flags.wasm_jitless) {
+    function_data->func_ref()->internal(isolate)->set_call_target(
+        wasm::GetBuiltinCodePointer<
+            Builtin::kGenericWasmToJSInterpreterWrapper>(isolate));
+#endif  // V8_ENABLE_DRUMBRAKE
   } else {
     int expected_arity = parameter_count;
-    wasm::ImportCallKind kind = wasm::kDefaultImportCallKind;
+    wasm::ImportCallKind kind;
     if (IsJSFunction(*callable)) {
       Tagged<SharedFunctionInfo> shared = Cast<JSFunction>(callable)->shared();
       expected_arity =
           shared->internal_formal_parameter_count_without_receiver();
-      if (expected_arity != parameter_count) {
+      if (expected_arity == parameter_count) {
+        kind = wasm::ImportCallKind::kJSFunctionArityMatch;
+      } else {
         kind = wasm::ImportCallKind::kJSFunctionArityMismatch;
       }
-    }
-    // TODO(jkummerow): Now that we have a per-process WasmImportWrapperCache,
-    // make use of that here.
-#if V8_ENABLE_DRUMBRAKE
-    if (v8_flags.wasm_jitless) {
-      function_data->func_ref()->internal(isolate)->set_call_target(
-          wasm::GetBuiltinCodePointer<
-              Builtin::kGenericWasmToJSInterpreterWrapper>(isolate));
     } else {
-#endif  // V8_ENABLE_DRUMBRAKE
-      if (UseGenericWasmToJSWrapper(kind, canonical_sig, suspend)) {
-        internal_function->set_call_target(
-            wasm::GetBuiltinCodePointer<Builtin::kWasmToJsWrapperAsm>(isolate));
-      } else {
-        // The Code object can be moved during compaction, so do not store a
-        // call_target directly but load the target from the code object at
-        // runtime.
-        DirectHandle<Code> wrapper_code =
-            compiler::CompileWasmToJSWrapper(isolate, nullptr, canonical_sig,
-                                             kind, expected_arity, suspend)
-                .ToHandleChecked();
-        DirectHandle<WasmImportData> import_data{
-            Cast<WasmImportData>(internal_function->implicit_arg()), isolate};
-        import_data->set_code(*wrapper_code);
-        internal_function->set_call_target(
-            wasm::GetBuiltinCodePointer<
-                Builtin::kWasmToOnHeapWasmToJsTrampoline>(isolate));
-      }
-#if V8_ENABLE_DRUMBRAKE
+      kind = wasm::ImportCallKind::kUseCallBuiltin;
     }
-#endif  // V8_ENABLE_DRUMBRAKE
+    wasm::WasmCodeRefScope code_ref_scope;
+    wasm::WasmImportWrapperCache* cache = wasm::GetWasmImportWrapperCache();
+    wasm::WasmCode* wrapper =
+        cache->MaybeGet(kind, sig_id, expected_arity, suspend);
+    if (wrapper) {
+      internal_function->set_call_target(wrapper->code_pointer());
+      function_data->offheap_data()->set_wrapper(wrapper);
+    } else if (UseGenericWasmToJSWrapper(kind, canonical_sig, suspend)) {
+      internal_function->set_call_target(
+          wasm::GetBuiltinCodePointer<Builtin::kWasmToJsWrapperAsm>(isolate));
+    } else {
+      // Initialize the import wrapper cache if that hasn't happened yet.
+      cache->LazyInitialize(isolate);
+      constexpr bool kNoSourcePositions = false;
+      wrapper = cache->CompileWasmImportCallWrapper(
+          isolate, kind, canonical_sig, sig_id, kNoSourcePositions,
+          expected_arity, suspend);
+      internal_function->set_call_target(wrapper->code_pointer());
+      function_data->offheap_data()->set_wrapper(wrapper);
+    }
   }
 
   Handle<String> name = factory->Function_string();
@@ -2835,6 +2837,18 @@ Handle<WasmJSFunction> WasmJSFunction::New(Isolate* isolate,
           .Build();
   internal_function->set_external(*js_function);
   return Cast<WasmJSFunction>(js_function);
+}
+
+void WasmJSFunctionData::OffheapData::set_wrapper(wasm::WasmCode* wrapper) {
+  DCHECK_NULL(wrapper_);  // We shouldn't overwrite existing wrappers.
+  wrapper_ = wrapper;
+  wrapper->IncRef();
+}
+
+WasmJSFunctionData::OffheapData::~OffheapData() {
+  if (wrapper_) {
+    wasm::WasmCode::DecrementRefCount({&wrapper_, 1});
+  }
 }
 
 Tagged<JSReceiver> WasmJSFunctionData::GetCallable() const {

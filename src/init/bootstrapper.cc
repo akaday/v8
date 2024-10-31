@@ -442,9 +442,9 @@ V8_NOINLINE Handle<JSFunction> CreateFunctionForBuiltin(
 
 V8_NOINLINE Handle<JSFunction> CreateFunctionForBuiltinWithPrototype(
     Isolate* isolate, Handle<String> name, Builtin builtin,
-    Handle<HeapObject> prototype, InstanceType type, int instance_size,
-    int inobject_properties, MutableMode prototype_mutability, int len,
-    AdaptArguments adapt) {
+    Handle<UnionOf<JSPrototype, Hole>> prototype, InstanceType type,
+    int instance_size, int inobject_properties,
+    MutableMode prototype_mutability, int len, AdaptArguments adapt) {
   Factory* factory = isolate->factory();
   Handle<NativeContext> context(isolate->native_context());
   Handle<Map> map =
@@ -487,7 +487,8 @@ V8_NOINLINE Handle<JSFunction> CreateFunctionForBuiltinWithPrototype(
   if (!IsResumableFunction(info->kind()) && IsTheHole(*prototype, isolate)) {
     prototype = factory->NewFunctionPrototype(result);
   }
-  JSFunction::SetInitialMap(isolate, result, initial_map, prototype);
+  JSFunction::SetInitialMap(isolate, result, initial_map,
+                            Cast<JSPrototype>(prototype));
 
   return result;
 }
@@ -509,8 +510,8 @@ V8_NOINLINE Handle<JSFunction> CreateFunctionForBuiltinWithoutPrototype(
 
 V8_NOINLINE Handle<JSFunction> CreateFunction(
     Isolate* isolate, Handle<String> name, InstanceType type, int instance_size,
-    int inobject_properties, Handle<HeapObject> prototype, Builtin builtin,
-    int len, AdaptArguments adapt) {
+    int inobject_properties, Handle<UnionOf<JSPrototype, Hole>> prototype,
+    Builtin builtin, int len, AdaptArguments adapt) {
   DCHECK(Builtins::HasJSLinkage(builtin));
 
   Handle<JSFunction> result = CreateFunctionForBuiltinWithPrototype(
@@ -529,8 +530,8 @@ V8_NOINLINE Handle<JSFunction> CreateFunction(
 
 V8_NOINLINE Handle<JSFunction> CreateFunction(
     Isolate* isolate, const char* name, InstanceType type, int instance_size,
-    int inobject_properties, Handle<HeapObject> prototype, Builtin builtin,
-    int len, AdaptArguments adapt) {
+    int inobject_properties, Handle<UnionOf<JSPrototype, Hole>> prototype,
+    Builtin builtin, int len, AdaptArguments adapt) {
   return CreateFunction(
       isolate, isolate->factory()->InternalizeUtf8String(name), type,
       instance_size, inobject_properties, prototype, builtin, len, adapt);
@@ -539,7 +540,8 @@ V8_NOINLINE Handle<JSFunction> CreateFunction(
 V8_NOINLINE Handle<JSFunction> InstallFunction(
     Isolate* isolate, Handle<JSObject> target, Handle<String> name,
     InstanceType type, int instance_size, int inobject_properties,
-    Handle<HeapObject> prototype, Builtin call, int len, AdaptArguments adapt) {
+    Handle<UnionOf<JSPrototype, Hole>> prototype, Builtin call, int len,
+    AdaptArguments adapt) {
   DCHECK(Builtins::HasJSLinkage(call));
   Handle<JSFunction> function =
       CreateFunction(isolate, name, type, instance_size, inobject_properties,
@@ -551,7 +553,8 @@ V8_NOINLINE Handle<JSFunction> InstallFunction(
 V8_NOINLINE Handle<JSFunction> InstallFunction(
     Isolate* isolate, Handle<JSObject> target, const char* name,
     InstanceType type, int instance_size, int inobject_properties,
-    Handle<HeapObject> prototype, Builtin call, int len, AdaptArguments adapt) {
+    Handle<UnionOf<JSPrototype, Hole>> prototype, Builtin call, int len,
+    AdaptArguments adapt) {
   return InstallFunction(
       isolate, target, isolate->factory()->InternalizeUtf8String(name), type,
       instance_size, inobject_properties, prototype, call, len, adapt);
@@ -2620,7 +2623,7 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                           Builtin::kArrayReduceRight, 1, kDontAdapt);
 
     SimpleInstallFunction(isolate_, proto, "toReversed",
-                          Builtin::kArrayPrototypeToReversed, 0, kAdapt);
+                          Builtin::kArrayPrototypeToReversed, 0, kDontAdapt);
     SimpleInstallFunction(isolate_, proto, "toSorted",
                           Builtin::kArrayPrototypeToSorted, 1, kDontAdapt);
     SimpleInstallFunction(isolate_, proto, "toSpliced",
@@ -4336,14 +4339,15 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     // Install "keys", "values" and "entries" methods on the {prototype}.
     InstallFunctionWithBuiltinId(isolate_, prototype, "entries",
                                  Builtin::kTypedArrayPrototypeEntries, 0,
-                                 kAdapt);
+                                 kDontAdapt);
 
     InstallFunctionWithBuiltinId(isolate_, prototype, "keys",
-                                 Builtin::kTypedArrayPrototypeKeys, 0, kAdapt);
+                                 Builtin::kTypedArrayPrototypeKeys, 0,
+                                 kDontAdapt);
 
     DirectHandle<JSFunction> values = InstallFunctionWithBuiltinId(
         isolate_, prototype, "values", Builtin::kTypedArrayPrototypeValues, 0,
-        kAdapt);
+        kDontAdapt);
     JSObject::AddProperty(isolate_, prototype, factory->iterator_symbol(),
                           values, DONT_ENUM);
 
@@ -4400,7 +4404,8 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
     SimpleInstallFunction(isolate_, prototype, "subarray",
                           Builtin::kTypedArrayPrototypeSubArray, 2, kDontAdapt);
     SimpleInstallFunction(isolate_, prototype, "toReversed",
-                          Builtin::kTypedArrayPrototypeToReversed, 0, kAdapt);
+                          Builtin::kTypedArrayPrototypeToReversed, 0,
+                          kDontAdapt);
     SimpleInstallFunction(isolate_, prototype, "toSorted",
                           Builtin::kTypedArrayPrototypeToSorted, 1, kDontAdapt);
     SimpleInstallFunction(isolate_, prototype, "with",
@@ -5858,8 +5863,11 @@ void Genesis::InitializeGlobal_js_explicit_resource_management() {
                                    Context::JS_DISPOSABLE_STACK_FUNCTION_INDEX);
   SimpleInstallFunction(isolate(), sync_disposable_stack_prototype, "use",
                         Builtin::kDisposableStackPrototypeUse, 1, kAdapt);
-  SimpleInstallFunction(isolate(), sync_disposable_stack_prototype, "dispose",
-                        Builtin::kDisposableStackPrototypeDispose, 0, kAdapt);
+  DirectHandle<JSFunction> dispose = SimpleInstallFunction(
+      isolate(), sync_disposable_stack_prototype, "dispose",
+      Builtin::kDisposableStackPrototypeDispose, 0, kAdapt);
+  JSObject::AddProperty(isolate(), sync_disposable_stack_prototype,
+                        factory->dispose_symbol(), dispose, DONT_ENUM);
   SimpleInstallFunction(isolate(), sync_disposable_stack_prototype, "adopt",
                         Builtin::kDisposableStackPrototypeAdopt, 2, kAdapt);
   SimpleInstallFunction(isolate(), sync_disposable_stack_prototype, "defer",
@@ -5886,9 +5894,12 @@ void Genesis::InitializeGlobal_js_explicit_resource_management() {
       Context::JS_ASYNC_DISPOSABLE_STACK_FUNCTION_INDEX);
   SimpleInstallFunction(isolate(), async_disposable_stack_prototype, "use",
                         Builtin::kAsyncDisposableStackPrototypeUse, 1, kAdapt);
-  SimpleInstallFunction(
+  DirectHandle<JSFunction> dispose_async = SimpleInstallFunction(
       isolate(), async_disposable_stack_prototype, "disposeAsync",
       Builtin::kAsyncDisposableStackPrototypeDisposeAsync, 0, kAdapt);
+  JSObject::AddProperty(isolate(), async_disposable_stack_prototype,
+                        factory->async_dispose_symbol(), dispose_async,
+                        DONT_ENUM);
   SimpleInstallFunction(isolate(), async_disposable_stack_prototype, "adopt",
                         Builtin::kAsyncDisposableStackPrototypeAdopt, 2,
                         kAdapt);
@@ -5903,6 +5914,20 @@ void Genesis::InitializeGlobal_js_explicit_resource_management() {
   SimpleInstallGetter(
       isolate(), async_disposable_stack_prototype, factory->disposed_string(),
       Builtin::kAsyncDisposableStackPrototypeGetDisposed, kAdapt);
+
+  // Add symbols to iterator prototypes
+  Handle<JSObject> iterator_prototype(
+      native_context()->initial_iterator_prototype(), isolate());
+  InstallFunctionAtSymbol(isolate(), iterator_prototype,
+                          factory->dispose_symbol(), "[Symbol.dispose]",
+                          Builtin::kIteratorPrototypeDispose, 0, kAdapt);
+
+  Handle<JSObject> async_iterator_prototype(
+      native_context()->initial_async_iterator_prototype(), isolate());
+  InstallFunctionAtSymbol(
+      isolate(), async_iterator_prototype, factory->async_dispose_symbol(),
+      "[Symbol.asyncDispose]", Builtin::kAsyncIteratorPrototypeAsyncDispose, 0,
+      kAdapt);
 }
 
 void Genesis::InitializeGlobal_js_float16array() {
@@ -6930,7 +6955,7 @@ void Genesis::TransferObject(DirectHandle<JSObject> from, Handle<JSObject> to) {
   TransferIndexedProperties(from, to);
 
   // Transfer the prototype (new map is needed).
-  Handle<HeapObject> proto(from->map()->prototype(), isolate());
+  Handle<JSPrototype> proto(from->map()->prototype(), isolate());
   JSObject::ForceSetPrototype(isolate(), to, proto);
 }
 

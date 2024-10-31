@@ -1326,7 +1326,7 @@ Handle<Context> Factory::NewScriptContext(DirectHandle<NativeContext> outer,
   DisallowGarbageCollection no_gc;
   context->set_scope_info(*scope_info);
   context->set_previous(*outer);
-  context->set(Context::CONST_TRACKING_LET_SIDE_DATA_INDEX, *side_data);
+  context->set(Context::CONTEXT_SIDE_TABLE_PROPERTY_INDEX, *side_data);
   DCHECK(context->IsScriptContext());
   return handle(context, isolate());
 }
@@ -1712,7 +1712,6 @@ Handle<WasmImportData> Factory::NewWasmImportData(
     DirectHandle<HeapObject> callable, wasm::Suspend suspend,
     MaybeDirectHandle<WasmTrustedInstanceData> instance_data,
     const wasm::CanonicalSig* sig) {
-  DCHECK(wasm::GetTypeCanonicalizer()->Contains(sig));
   Tagged<Map> map = *wasm_import_data_map();
   auto result = Cast<WasmImportData>(AllocateRawWithImmortalMap(
       map->instance_size(), AllocationType::kTrusted, map));
@@ -1728,7 +1727,6 @@ Handle<WasmImportData> Factory::NewWasmImportData(
   result->set_wrapper_budget(v8_flags.wasm_wrapper_tiering_budget);
   result->set_call_origin(Smi::FromInt(WasmImportData::kInvalidCallOrigin));
   result->set_sig(sig);
-  result->set_code(*BUILTIN_CODE(isolate(), Abort));
   return handle(result, isolate());
 }
 
@@ -1800,6 +1798,13 @@ Handle<WasmJSFunctionData> Factory::NewWasmJSFunctionData(
   DirectHandle<WasmImportData> import_data = NewWasmImportData(
       callable, suspend, DirectHandle<WasmTrustedInstanceData>(), sig);
 
+  // Rough guess for a wrapper that may be shared with other users of it.
+  constexpr size_t kOffheapDataSizeEstimate = 100;
+  DirectHandle<TrustedManaged<WasmJSFunctionData::OffheapData>> offheap_data =
+      TrustedManaged<WasmJSFunctionData::OffheapData>::From(
+          isolate(), kOffheapDataSizeEstimate,
+          std::make_shared<WasmJSFunctionData::OffheapData>());
+
   DirectHandle<WasmInternalFunction> internal =
       NewWasmInternalFunction(import_data, -1, signature_hash);
   DirectHandle<WasmFuncRef> func_ref = NewWasmFuncRef(internal, rtt);
@@ -1816,6 +1821,7 @@ Handle<WasmJSFunctionData> Factory::NewWasmJSFunctionData(
   result->set_canonical_sig_index(sig_index.index);
   result->set_js_promise_flags(WasmFunctionData::SuspendField::encode(suspend) |
                                WasmFunctionData::PromiseField::encode(promise));
+  result->set_protected_offheap_data(*offheap_data);
   return handle(result, isolate());
 }
 
@@ -1874,7 +1880,6 @@ Handle<WasmExportedFunctionData> Factory::NewWasmExportedFunctionData(
     DirectHandle<WasmInternalFunction> internal_function,
     const wasm::CanonicalSig* sig, wasm::CanonicalTypeIndex type_index,
     int wrapper_budget, wasm::Promise promise) {
-  DCHECK(wasm::GetTypeCanonicalizer()->Contains(sig));
   int func_index = internal_function->function_index();
   DirectHandle<Cell> wrapper_budget_cell =
       NewCell(Smi::FromInt(wrapper_budget));
@@ -2207,13 +2212,14 @@ Handle<PropertyCell> Factory::NewPropertyCell(DirectHandle<Name> name,
   return handle(cell, isolate());
 }
 
-Handle<ConstTrackingLetCell> Factory::NewConstTrackingLetCell(
+Handle<ContextSidePropertyCell> Factory::NewContextSidePropertyCell(
     AllocationType allocation) {
-  static_assert(ConstTrackingLetCell::kSize <= kMaxRegularHeapObjectSize);
-  Tagged<ConstTrackingLetCell> cell = Cast<ConstTrackingLetCell>(
-      AllocateRawWithImmortalMap(ConstTrackingLetCell::kSize, allocation,
-                                 *global_const_tracking_let_cell_map()));
+  static_assert(ContextSidePropertyCell::kSize <= kMaxRegularHeapObjectSize);
+  Tagged<ContextSidePropertyCell> cell = Cast<ContextSidePropertyCell>(
+      AllocateRawWithImmortalMap(ContextSidePropertyCell::kSize, allocation,
+                                 *global_context_side_property_cell_map()));
   DisallowGarbageCollection no_gc;
+  cell->set_context_side_property_raw(ContextSidePropertyCell::Const());
   cell->set_dependent_code(
       DependentCode::empty_dependent_code(ReadOnlyRoots(isolate())),
       SKIP_WRITE_BARRIER);
@@ -2327,7 +2333,7 @@ Tagged<Map> Factory::InitializeMap(Tagged<Map> map, InstanceType type,
   } else {
     DCHECK_EQ(inobject_properties, 0);
     map->set_inobject_properties_start_or_constructor_function_index(0);
-    map->set_prototype_validity_cell(Smi::FromInt(Map::kPrototypeChainValid),
+    map->set_prototype_validity_cell(Map::kPrototypeChainValidSmi,
                                      kRelaxedStore, SKIP_WRITE_BARRIER);
   }
   map->set_dependent_code(DependentCode::empty_dependent_code(roots),
@@ -2731,9 +2737,9 @@ Handle<FixedDoubleArray> Factory::CopyFixedDoubleArray(
   Handle<FixedDoubleArray> result =
       Cast<FixedDoubleArray>(NewFixedDoubleArray(len));
   Heap::CopyBlock(
-      result->address() + FixedDoubleArray::kLengthOffset,
-      array->address() + FixedDoubleArray::kLengthOffset,
-      FixedDoubleArray::SizeFor(len) - FixedDoubleArray::kLengthOffset);
+      result->address() + offsetof(FixedDoubleArray, length_),
+      array->address() + offsetof(FixedDoubleArray, length_),
+      FixedDoubleArray::SizeFor(len) - offsetof(FixedDoubleArray, length_));
   return result;
 }
 
@@ -3143,7 +3149,7 @@ Handle<JSObject> Factory::NewSlowJSObjectFromMap(DirectHandle<Map> map) {
 }
 
 Handle<JSObject> Factory::NewSlowJSObjectWithPropertiesAndElements(
-    Handle<HeapObject> prototype, DirectHandle<HeapObject> properties,
+    Handle<JSPrototype> prototype, DirectHandle<HeapObject> properties,
     DirectHandle<FixedArrayBase> elements) {
   DCHECK(IsPropertyDictionary(*properties));
 
@@ -3684,7 +3690,7 @@ Handle<JSDataViewOrRabGsabDataView> Factory::NewJSDataViewOrRabGsabDataView(
 MaybeHandle<JSBoundFunction> Factory::NewJSBoundFunction(
     DirectHandle<JSReceiver> target_function, DirectHandle<JSAny> bound_this,
     base::Vector<DirectHandle<Object>> bound_args,
-    Handle<HeapObject> prototype) {
+    Handle<JSPrototype> prototype) {
   DCHECK(IsCallable(*target_function));
   static_assert(Code::kMaxArguments <= FixedArray::kMaxLength);
   if (bound_args.length() >= Code::kMaxArguments) {
@@ -4741,7 +4747,8 @@ Handle<JSFunction> Factory::JSFunctionBuilder::BuildRaw(
     // code->parameter_count() here instead, but not all Code objects know
     // their parameter count yet.
     function->AllocateDispatchHandle(
-        isolate, sfi_->internal_formal_parameter_count_with_receiver(), *code);
+        isolate, sfi_->internal_formal_parameter_count_with_receiver(), *code,
+        mode);
   } else {
     // TODO(olivf, 42204201): Here we are explicitly not updating (only
     // potentially initializing) the code. Worst case the dispatch handle still
@@ -4754,9 +4761,17 @@ Handle<JSFunction> Factory::JSFunctionBuilder::BuildRaw(
     // and maybe find some alternative to initialize it correctly from the
     // beginning.
     if (jdt->GetCode(handle)->is_builtin()) {
-      jdt->SetCode(handle, *code);
+      jdt->SetCodeNoWriteBarrier(handle, *code);
+      // Write barrier is needed since the above update can race with marking
+      // which could leave the dispatch slot unmarked.
+      // TODO(olivf): This should be fixed by using a more traditional WB
+      // for dispatch handles (i.e. have a marking queue with dispatch handles
+      // instead of marking through the handle).
+      function->set_dispatch_handle(handle,
+                                    WriteBarrierMode::UPDATE_WRITE_BARRIER);
+    } else {
+      function->set_dispatch_handle(handle, mode);
     }
-    function->set_dispatch_handle(handle, mode);
   }
 #else
   function->UpdateCode(*code, mode);

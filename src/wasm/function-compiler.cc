@@ -202,15 +202,13 @@ void WasmCompilationUnit::CompileWasmFunction(Counters* counters,
 }
 
 JSToWasmWrapperCompilationUnit::JSToWasmWrapperCompilationUnit(
-    Isolate* isolate, const CanonicalSig* sig, CanonicalTypeIndex sig_index,
-    const WasmModule* module, WasmEnabledFeatures enabled_features)
+    Isolate* isolate, const CanonicalSig* sig, CanonicalTypeIndex sig_index)
     : isolate_(isolate),
       sig_(sig),
       sig_index_(sig_index),
       job_(v8_flags.wasm_jitless
                ? nullptr
-               : compiler::NewJSToWasmCompilationJob(isolate, sig, module,
-                                                     enabled_features)) {
+               : compiler::NewJSToWasmCompilationJob(isolate, sig)) {
   if (!v8_flags.wasm_jitless) {
     OptimizedCompilationInfo* info =
         v8_flags.turboshaft_wasm_wrappers
@@ -262,8 +260,11 @@ Handle<Code> JSToWasmWrapperCompilationUnit::Finalize() {
     PROFILE(isolate_, CodeCreateEvent(LogEventListener::CodeTag::kStub,
                                       Cast<AbstractCode>(code), name));
   }
-  isolate_->heap()->js_to_wasm_wrappers()->set(sig_index_.index,
-                                               MakeWeak(code->wrapper()));
+  // We should always have checked the cache before compiling a wrapper.
+  Tagged<WeakFixedArray> cache = isolate_->heap()->js_to_wasm_wrappers();
+  DCHECK(cache->get(sig_index_.index).IsCleared());
+  // Install the compiled wrapper in the cache now.
+  cache->set(sig_index_.index, MakeWeak(code->wrapper()));
   Counters* counters = isolate_->counters();
   counters->wasm_generated_code_size()->Increment(code->body_size());
   counters->wasm_reloc_size()->Increment(code->relocation_size());
@@ -273,13 +274,9 @@ Handle<Code> JSToWasmWrapperCompilationUnit::Finalize() {
 
 // static
 Handle<Code> JSToWasmWrapperCompilationUnit::CompileJSToWasmWrapper(
-    Isolate* isolate, const CanonicalSig* sig, CanonicalTypeIndex sig_index,
-    const WasmModule* module) {
+    Isolate* isolate, const CanonicalSig* sig, CanonicalTypeIndex sig_index) {
   // Run the compilation unit synchronously.
-  WasmEnabledFeatures enabled_features =
-      WasmEnabledFeatures::FromIsolate(isolate);
-  JSToWasmWrapperCompilationUnit unit(isolate, sig, sig_index, module,
-                                      enabled_features);
+  JSToWasmWrapperCompilationUnit unit(isolate, sig, sig_index);
   unit.Execute();
   return unit.Finalize();
 }
