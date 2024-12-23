@@ -274,7 +274,7 @@ void LiftoffAssembler::StoreTaggedPointer(Register dst_addr,
     dst_op = MemOperand(kScratchReg, 0);
   }
   auto trapper = [protected_store_pc](int offset) {
-    if (protected_store_pc) *protected_store_pc = static_cast<uint32_t>(offset)
+    if (protected_store_pc) *protected_store_pc = static_cast<uint32_t>(offset);
   };
   StoreWord(src, dst_op, trapper);
   if (protected_store_pc) {
@@ -448,7 +448,7 @@ void LiftoffAssembler::Store(Register dst_addr, Register offset_reg,
       if (dst_op.offset() != 0) {
         AddWord(kScratchReg, dst_op.rm(), dst_op.offset());
       }
-      trapper(pc_offset);
+      trapper(pc_offset());
       vs(src.fp().toV(), dst_reg, 0, VSew::E8);
       break;
     }
@@ -1956,14 +1956,16 @@ void LiftoffAssembler::LoadTransform(LiftoffRegister dst, Register src_addr,
       vfmv_vf(dst_v, kScratchDoubleReg);
     }
   }
-  DCHECK(protected_store_pc && InstructionAt(*protected_store_pc)->IsLoad());
+  if (protected_load_pc) {
+    DCHECK(InstructionAt(*protected_load_pc)->IsLoad());
+  }
 }
 
 void LiftoffAssembler::LoadLane(LiftoffRegister dst, LiftoffRegister src,
                                 Register addr, Register offset_reg,
                                 uintptr_t offset_imm, LoadType type,
                                 uint8_t laneidx, uint32_t* protected_load_pc,
-                                bool /* i64_offfset */) {
+                                bool /* i64_offset */) {
   UseScratchRegisterScope temps(this);
   Register scratch = temps.Acquire();
   MemOperand src_op = liftoff::GetMemOp(this, addr, offset_reg, offset_imm);
@@ -1999,14 +2001,16 @@ void LiftoffAssembler::LoadLane(LiftoffRegister dst, LiftoffRegister src,
   } else {
     UNREACHABLE();
   }
-  DCHECK(protected_store_pc && InstructionAt(*protected_store_pc)->IsLoad());
+  if (protected_load_pc) {
+    DCHECK(InstructionAt(*protected_load_pc)->IsLoad());
+  }
 }
 
 void LiftoffAssembler::StoreLane(Register dst, Register offset,
                                  uintptr_t offset_imm, LiftoffRegister src,
                                  StoreType type, uint8_t lane,
                                  uint32_t* protected_store_pc,
-                                 bool /* i64_offfset */) {
+                                 bool /* i64_offset */) {
   MemOperand dst_op = liftoff::GetMemOp(this, dst, offset, offset_imm);
   auto trapper = [protected_store_pc](int offset) {
     if (protected_store_pc) *protected_store_pc = static_cast<uint32_t>(offset);

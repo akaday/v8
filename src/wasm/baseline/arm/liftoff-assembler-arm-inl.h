@@ -499,21 +499,23 @@ void LiftoffAssembler::CallFrameSetupStub(int declared_function_index) {
 
 void LiftoffAssembler::PrepareTailCall(int num_callee_stack_params,
                                        int stack_param_delta) {
-  UseScratchRegisterScope temps(this);
-  Register scratch = temps.Acquire();
+  {
+    UseScratchRegisterScope temps(this);
+    Register scratch = temps.Acquire();
 
-  // Push the return address and frame pointer to complete the stack frame.
-  sub(sp, sp, Operand(8));
-  ldr(scratch, MemOperand(fp, 4));
-  str(scratch, MemOperand(sp, 4));
-  ldr(scratch, MemOperand(fp, 0));
-  str(scratch, MemOperand(sp, 0));
+    // Push the return address and frame pointer to complete the stack frame.
+    sub(sp, sp, Operand(8));
+    ldr(scratch, MemOperand(fp, 4));
+    str(scratch, MemOperand(sp, 4));
+    ldr(scratch, MemOperand(fp, 0));
+    str(scratch, MemOperand(sp, 0));
 
-  // Shift the whole frame upwards.
-  int slot_count = num_callee_stack_params + 2;
-  for (int i = slot_count - 1; i >= 0; --i) {
-    ldr(scratch, MemOperand(sp, i * 4));
-    str(scratch, MemOperand(fp, (i - stack_param_delta) * 4));
+    // Shift the whole frame upwards.
+    int slot_count = num_callee_stack_params + 2;
+    for (int i = slot_count - 1; i >= 0; --i) {
+      ldr(scratch, MemOperand(sp, i * 4));
+      str(scratch, MemOperand(fp, (i - stack_param_delta) * 4));
+    }
   }
 
   // Set the new stack and frame pointer.
@@ -583,6 +585,7 @@ void LiftoffAssembler::PatchPrepareStackFrame(
     regs_to_save.set(WasmHandleStackOverflowDescriptor::GapRegister());
     regs_to_save.set(WasmHandleStackOverflowDescriptor::FrameBaseRegister());
     for (auto reg : kGpParamRegisters) regs_to_save.set(reg);
+    for (auto reg : kFpParamRegisters) regs_to_save.set(reg);
     PushRegisters(regs_to_save);
     mov(WasmHandleStackOverflowDescriptor::GapRegister(), Operand(frame_size));
     add(WasmHandleStackOverflowDescriptor::FrameBaseRegister(), fp,
@@ -708,6 +711,7 @@ void LiftoffAssembler::CheckStackShrink() {
   b(&done, ne);
   LiftoffRegList regs_to_save;
   for (auto reg : kGpReturnRegisters) regs_to_save.set(reg);
+  for (auto reg : kFpReturnRegisters) regs_to_save.set(reg);
   PushRegisters(regs_to_save);
   MacroAssembler::Move(kCArgRegs[0], ExternalReference::isolate_address());
   PrepareCallCFunction(1);
@@ -4869,12 +4873,13 @@ void LiftoffAssembler::CallIndirect(const ValueKindSig* sig,
                                     compiler::CallDescriptor* call_descriptor,
                                     Register target) {
   DCHECK(target != no_reg);
-  Call(target);
+  CallWasmCodePointer(target);
 }
 
-void LiftoffAssembler::TailCallIndirect(Register target) {
+void LiftoffAssembler::TailCallIndirect(
+    compiler::CallDescriptor* call_descriptor, Register target) {
   DCHECK(target != no_reg);
-  Jump(target);
+  CallWasmCodePointer(target, CallJumpMode::kTailCall);
 }
 
 void LiftoffAssembler::CallBuiltin(Builtin builtin) {
@@ -4894,8 +4899,9 @@ void LiftoffAssembler::DeallocateStackSlot(uint32_t size) {
 
 void LiftoffAssembler::MaybeOSR() {}
 
-void LiftoffAssembler::emit_set_if_nan(Register dst, DoubleRegister src,
-                                       ValueKind kind) {
+void LiftoffAssembler::emit_store_nonzero_if_nan(Register dst,
+                                                 DoubleRegister src,
+                                                 ValueKind kind) {
   if (kind == kF32) {
     FloatRegister src_f = liftoff::GetFloatRegister(src);
     VFPCompareAndSetFlags(src_f, src_f);
@@ -4908,10 +4914,11 @@ void LiftoffAssembler::emit_set_if_nan(Register dst, DoubleRegister src,
   str(dst, MemOperand(dst), ne);  // x != x iff isnan(x)
 }
 
-void LiftoffAssembler::emit_s128_set_if_nan(Register dst, LiftoffRegister src,
-                                            Register tmp_gp,
-                                            LiftoffRegister tmp_s128,
-                                            ValueKind lane_kind) {
+void LiftoffAssembler::emit_s128_store_nonzero_if_nan(Register dst,
+                                                      LiftoffRegister src,
+                                                      Register tmp_gp,
+                                                      LiftoffRegister tmp_s128,
+                                                      ValueKind lane_kind) {
   QwNeonRegister src_q = liftoff::GetSimd128Register(src);
   QwNeonRegister tmp_q = liftoff::GetSimd128Register(tmp_s128);
   if (lane_kind == kF32) {
@@ -4923,7 +4930,11 @@ void LiftoffAssembler::emit_s128_set_if_nan(Register dst, LiftoffRegister src,
     DCHECK_EQ(lane_kind, kF64);
     vadd(tmp_q.low(), src_q.low(), src_q.high());
   }
-  emit_set_if_nan(dst, tmp_q.low(), lane_kind);
+  emit_store_nonzero_if_nan(dst, tmp_q.low(), lane_kind);
+}
+
+void LiftoffAssembler::emit_store_nonzero(Register dst) {
+  str(dst, MemOperand(dst));
 }
 
 void LiftoffStackSlots::Construct(int param_slots) {

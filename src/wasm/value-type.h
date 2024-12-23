@@ -58,18 +58,19 @@ struct TypeIndex {
 
   static constexpr uint32_t kInvalid = ~0u;
   constexpr bool valid() const { return index != kInvalid; }
+
+  size_t hash_value() const { return index; }
 };
 
 struct ModuleTypeIndex : public TypeIndex {
   inline static constexpr ModuleTypeIndex Invalid();
   // Can't use "=default" because the base class doesn't have operator<=>.
-  bool operator==(const ModuleTypeIndex& other) const {
-    return index == other.index;
-  }
-  auto operator<=>(const ModuleTypeIndex& other) const {
+  bool operator==(ModuleTypeIndex other) const { return index == other.index; }
+  auto operator<=>(ModuleTypeIndex other) const {
     return index <=> other.index;
   }
 };
+ASSERT_TRIVIALLY_COPYABLE(ModuleTypeIndex);
 
 constexpr ModuleTypeIndex ModuleTypeIndex::Invalid() {
   return ModuleTypeIndex{ModuleTypeIndex::kInvalid};
@@ -78,13 +79,14 @@ constexpr ModuleTypeIndex ModuleTypeIndex::Invalid() {
 struct CanonicalTypeIndex : public TypeIndex {
   inline static constexpr CanonicalTypeIndex Invalid();
 
-  bool operator==(const CanonicalTypeIndex& other) const {
+  bool operator==(CanonicalTypeIndex other) const {
     return index == other.index;
   }
-  auto operator<=>(const CanonicalTypeIndex& other) const {
+  auto operator<=>(CanonicalTypeIndex other) const {
     return index <=> other.index;
   }
 };
+ASSERT_TRIVIALLY_COPYABLE(CanonicalTypeIndex);
 
 constexpr CanonicalTypeIndex CanonicalTypeIndex::Invalid() {
   return CanonicalTypeIndex{CanonicalTypeIndex::kInvalid};
@@ -610,8 +612,6 @@ constexpr bool is_defaultable(ValueKind kind) {
 // A ValueType is encoded by two components: a ValueKind and a heap
 // representation (for reference types/rtts). Those are encoded into 32 bits
 // using base::BitField.
-// ValueType encoding includes an additional bit marking the index of a type as
-// relative. This should only be used during type canonicalization.
 // {ValueTypeBase} shouldn't be used directly; code should be using one of
 // the subclasses. To enforce this, the public interface is limited to
 // type index agnostic getters.
@@ -658,9 +658,11 @@ class ValueTypeBase {
   constexpr bool is_uninhabited() const {
     return is_bottom() ||
            (is_non_nullable() && (is_reference_to(HeapType::kNone) ||
+                                  is_reference_to(HeapType::kNoExn) ||
                                   is_reference_to(HeapType::kNoExtern) ||
                                   is_reference_to(HeapType::kNoFunc) ||
                                   is_reference_to(HeapType::kNoneShared) ||
+                                  is_reference_to(HeapType::kNoExnShared) ||
                                   is_reference_to(HeapType::kNoExternShared) ||
                                   is_reference_to(HeapType::kNoFuncShared)));
   }
@@ -847,9 +849,14 @@ class ValueTypeBase {
   /**************************** Static constants ******************************/
   static constexpr int kKindBits = 5;
   static constexpr int kHeapTypeBits = 20;
-  static constexpr int kLastUsedBit = 25;
+  static constexpr int kLastUsedBit = 24;
 
   static const intptr_t kBitFieldOffset;
+
+  size_t hash_value() const {
+    // Just use the whole encoded bit field, similar to {operator==}.
+    return bit_field_;
+  }
 
  protected:
   // {hash_value} directly reads {bit_field_}.
@@ -906,17 +913,12 @@ class ValueTypeBase {
 
   using KindField = base::BitField<ValueKind, 0, kKindBits>;
   using HeapTypeField = KindField::Next<uint32_t, kHeapTypeBits>;
-  // Marks a type as a canonical type which uses an index relative to its
-  // recursive group start. Used only during type canonicalization.
-  using CanonicalRelativeField = HeapTypeField::Next<bool, 1>;
 
   static_assert(kV8MaxWasmTypes < (1u << kHeapTypeBits),
                 "Type indices fit in kHeapTypeBits");
   // This is implemented defensively against field order changes.
-  static_assert(kLastUsedBit ==
-                    std::max(KindField::kLastUsedBit,
-                             std::max(HeapTypeField::kLastUsedBit,
-                                      CanonicalRelativeField::kLastUsedBit)),
+  static_assert(kLastUsedBit == std::max(KindField::kLastUsedBit,
+                                         HeapTypeField::kLastUsedBit),
                 "kLastUsedBit is consistent");
 
   constexpr explicit ValueTypeBase(uint32_t bit_field)
@@ -1056,13 +1058,6 @@ class CanonicalValueType : public ValueTypeBase {
         KindField::encode(kind) | HeapTypeField::encode(index.index))};
   }
 
-  static constexpr CanonicalValueType WithRelativeIndex(ValueKind kind,
-                                                        uint32_t index) {
-    return CanonicalValueType{
-        ValueTypeBase(KindField::encode(kind) | HeapTypeField::encode(index) |
-                      CanonicalRelativeField::encode(true))};
-  }
-
   static constexpr CanonicalValueType FromRawBitField(uint32_t bit_field) {
     return CanonicalValueType{ValueTypeBase::FromRawBitField(bit_field)};
   }
@@ -1078,9 +1073,19 @@ class CanonicalValueType : public ValueTypeBase {
     return CanonicalTypeIndex{ValueTypeBase::ref_index()};
   }
 
-  constexpr bool is_canonical_relative() const {
-    return has_index() && CanonicalRelativeField::decode(bit_field_);
+  bool IsFunctionType() const {
+    if (!is_object_reference()) return false;
+    wasm::HeapType::Representation rep = heap_representation();
+    if (rep == wasm::HeapType::kFunc) return true;
+    if (rep == wasm::HeapType::kFuncShared) return true;
+    if (rep == wasm::HeapType::kNoFunc) return true;
+    if (rep == wasm::HeapType::kNoFuncShared) return true;
+    if (!has_index()) return false;
+    return IsFunctionType_Slow();
   }
+
+ private:
+  bool IsFunctionType_Slow() const;
 };
 ASSERT_TRIVIALLY_COPYABLE(CanonicalValueType);
 
@@ -1091,15 +1096,6 @@ static_assert(sizeof(ValueTypeBase) <= kUInt32Size,
               "ValueType is small and can be passed by value");
 static_assert(ValueTypeBase::kLastUsedBit < kSmiValueSize,
               "ValueType has space to be encoded in a Smi");
-
-inline size_t hash_value(TypeIndex type) {
-  return static_cast<size_t>(type.index);
-}
-
-inline size_t hash_value(ValueTypeBase type) {
-  // Just use the whole encoded bit field, similar to {operator==}.
-  return static_cast<size_t>(type.bit_field_);
-}
 
 // Output operator, useful for DCHECKS and others.
 inline std::ostream& operator<<(std::ostream& oss, ValueType type) {
@@ -1160,6 +1156,8 @@ constexpr CanonicalValueType kCanonicalExternRef =
     CanonicalValueType::RefNull(HeapType::kExtern);
 constexpr CanonicalValueType kCanonicalAnyRef =
     CanonicalValueType::RefNull(HeapType::kAny);
+constexpr CanonicalValueType kCanonicalFuncRef =
+    CanonicalValueType::RefNull(HeapType::kFunc);
 
 // Constants used by the generic js-to-wasm wrapper.
 constexpr int kWasmValueKindBitsMask = (1u << ValueType::kKindBits) - 1;

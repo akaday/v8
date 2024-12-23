@@ -888,9 +888,9 @@ class MergePointInterpreterFrameState {
   bool has_phi() const { return !phis_.is_empty(); }
   Phi::List* phis() { return &phis_; }
 
-  int predecessor_count() const { return predecessor_count_; }
+  uint32_t predecessor_count() const { return predecessor_count_; }
 
-  int predecessors_so_far() const { return predecessors_so_far_; }
+  uint32_t predecessors_so_far() const { return predecessors_so_far_; }
 
   BasicBlock* predecessor_at(int i) const {
     DCHECK_LE(predecessors_so_far_, predecessor_count_);
@@ -1065,8 +1065,8 @@ class MergePointInterpreterFrameState {
 
   int merge_offset_;
 
-  int predecessor_count_;
-  int predecessors_so_far_;
+  uint32_t predecessor_count_;
+  uint32_t predecessors_so_far_;
 
   uint32_t bitfield_;
 
@@ -1120,13 +1120,6 @@ struct LoopEffects {
   ZoneSet<InlinedAllocation*> allocations;
   bool unstable_aspects_cleared = false;
   bool may_have_aliasing_contexts = false;
-  void Clear() {
-    context_slot_written.clear();
-    objects_written.clear();
-    keys_cleared.clear();
-    allocations.clear();
-    unstable_aspects_cleared = false;
-  }
   void Merge(const LoopEffects* other) {
     if (!unstable_aspects_cleared) {
       unstable_aspects_cleared = other->unstable_aspects_cleared;

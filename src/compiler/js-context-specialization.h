@@ -56,14 +56,19 @@ class V8_EXPORT_PRIVATE JSContextSpecialization final : public AdvancedReducer {
  private:
   Reduction ReduceParameter(Node* node);
   Reduction ReduceJSLoadContext(Node* node);
+  Reduction ReduceJSLoadScriptContext(Node* node);
   Reduction ReduceJSStoreContext(Node* node);
   Reduction ReduceJSStoreScriptContext(Node* node);
   Reduction ReduceJSGetImportMeta(Node* node);
 
-  Reduction SimplifyJSStoreContext(Node* node, Node* new_context,
-                                   size_t new_depth);
   Reduction SimplifyJSLoadContext(Node* node, Node* new_context,
                                   size_t new_depth);
+  Reduction SimplifyJSLoadScriptContext(Node* node, Node* new_context,
+                                        size_t new_depth);
+  Reduction SimplifyJSStoreContext(Node* node, Node* new_context,
+                                   size_t new_depth);
+  Reduction SimplifyJSStoreScriptContext(Node* node, Node* new_context,
+                                         size_t new_depth);
 
   Isolate* isolate() const;
   JSGraph* jsgraph() const { return jsgraph_; }

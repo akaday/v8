@@ -224,7 +224,7 @@ size_t JSTypedArray::GetLengthOrOutOfBounds(bool& out_of_bounds) const {
   if (IsVariableLength()) {
     return GetVariableLengthOrOutOfBounds(out_of_bounds);
   }
-  return LengthUnchecked();
+  return byte_length() / element_size();
 }
 
 size_t JSTypedArray::GetLength() const {
@@ -233,7 +233,12 @@ size_t JSTypedArray::GetLength() const {
 }
 
 size_t JSTypedArray::GetByteLength() const {
-  return GetLength() * element_size();
+  if (WasDetached()) return 0;
+  if (IsVariableLength()) {
+    bool out_of_bounds = false;
+    return GetVariableByteLengthOrOutOfBounds(out_of_bounds);
+  }
+  return byte_length();
 }
 
 bool JSTypedArray::IsOutOfBounds() const {
@@ -270,20 +275,6 @@ inline void JSTypedArray::ForFixedTypedArray(ExternalArrayType array_type,
 #undef TYPED_ARRAY_CASE
   }
   UNREACHABLE();
-}
-
-size_t JSTypedArray::length() const {
-  DCHECK(!is_length_tracking());
-  DCHECK(!is_backed_by_rab());
-  return ReadBoundedSizeField(kRawLengthOffset);
-}
-
-size_t JSTypedArray::LengthUnchecked() const {
-  return ReadBoundedSizeField(kRawLengthOffset);
-}
-
-void JSTypedArray::set_length(size_t value) {
-  WriteBoundedSizeField(kRawLengthOffset, value);
 }
 
 DEF_GETTER(JSTypedArray, external_pointer, Address) {
@@ -379,14 +370,14 @@ MaybeHandle<JSTypedArray> JSTypedArray::Validate(Isolate* isolate,
   Handle<JSTypedArray> array = Cast<JSTypedArray>(receiver);
   if (V8_UNLIKELY(array->WasDetached())) {
     const MessageTemplate message = MessageTemplate::kDetachedOperation;
-    Handle<String> operation =
+    DirectHandle<String> operation =
         isolate->factory()->NewStringFromAsciiChecked(method_name);
     THROW_NEW_ERROR(isolate, NewTypeError(message, operation));
   }
 
   if (V8_UNLIKELY(array->IsVariableLength() && array->IsOutOfBounds())) {
     const MessageTemplate message = MessageTemplate::kDetachedOperation;
-    Handle<String> operation =
+    DirectHandle<String> operation =
         isolate->factory()->NewStringFromAsciiChecked(method_name);
     THROW_NEW_ERROR(isolate, NewTypeError(message, operation));
   }

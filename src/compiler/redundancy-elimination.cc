@@ -36,11 +36,11 @@ Reduction RedundancyElimination::Reduce(Node* node) {
     case IrOpcode::kCheckInternalizedString:
     case IrOpcode::kCheckNotTaggedHole:
     case IrOpcode::kCheckNumber:
+    case IrOpcode::kCheckNumberFitsInt32:
     case IrOpcode::kCheckReceiver:
     case IrOpcode::kCheckReceiverOrNullOrUndefined:
     case IrOpcode::kCheckSmi:
     case IrOpcode::kCheckString:
-    case IrOpcode::kCheckStringWrapper:
     case IrOpcode::kCheckStringOrStringWrapper:
     case IrOpcode::kCheckSymbol:
     // These are not really check nodes, but behave the same in that they can be
@@ -187,12 +187,15 @@ Subsumption CheckSubsumes(Node const* a, Node const* b,
     } else if (a->opcode() == IrOpcode::kCheckInternalizedString &&
                b->opcode() == IrOpcode::kCheckStringOrStringWrapper) {
       // CheckInteralizedString(node) implies CheckStringOrStringWrapper(node)
-    } else if (a->opcode() == IrOpcode::kCheckStringWrapper &&
-               b->opcode() == IrOpcode::kCheckStringOrStringWrapper) {
-      // CheckStringWrapper(node) implies CheckStringOrStringWrapper(node)
     } else if (a->opcode() == IrOpcode::kCheckSmi &&
                b->opcode() == IrOpcode::kCheckNumber) {
       // CheckSmi(node) implies CheckNumber(node)
+    } else if (a->opcode() == IrOpcode::kCheckSmi &&
+               b->opcode() == IrOpcode::kCheckNumberFitsInt32) {
+      // CheckSmi(node) implies CheckNumberFitsInt32(node)
+    } else if (a->opcode() == IrOpcode::kCheckNumberFitsInt32 &&
+               b->opcode() == IrOpcode::kCheckNumber) {
+      // CheckNumberFitsInt32(node) implies CheckNumber(node)
     } else if (a->opcode() == IrOpcode::kCheckedTaggedSignedToInt32 &&
                b->opcode() == IrOpcode::kCheckedTaggedToInt32) {
       // CheckedTaggedSignedToInt32(node) implies CheckedTaggedToInt32(node)
@@ -223,9 +226,9 @@ Subsumption CheckSubsumes(Node const* a, Node const* b,
         case IrOpcode::kCheckBounds:
         case IrOpcode::kCheckSmi:
         case IrOpcode::kCheckString:
-        case IrOpcode::kCheckStringWrapper:
         case IrOpcode::kCheckStringOrStringWrapper:
         case IrOpcode::kCheckNumber:
+        case IrOpcode::kCheckNumberFitsInt32:
         case IrOpcode::kCheckBigInt:
         case IrOpcode::kCheckedBigIntToBigInt64:
           break;

@@ -147,6 +147,7 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
 
   // Check whether we are exceeding the stack limit on the backtrack stack.
   void CheckStackLimit();
+  void AssertAboveStackLimitMinusSlack();
   void CallCFunctionUsingStub(ExternalReference function, int num_arguments);
 
   void CallCheckStackGuardState(
@@ -202,13 +203,6 @@ class V8_EXPORT_PRIVATE RegExpMacroAssemblerS390
   void StoreRegExpStackPointerToMemory(Register src, Register scratch);
   void PushRegExpBasePointer(Register stack_pointer, Register scratch);
   void PopRegExpBasePointer(Register stack_pointer_out, Register scratch);
-
-  void EncodePositionIndependentRegisterOutput(Register relative_out,
-                                               Register absolute_in,
-                                               Register scratch);
-  void DecodePositionIndependentRegisterOutput(Register absolute_out,
-                                               Register relative_in,
-                                               Register scratch);
 
   Isolate* isolate() const { return masm_->isolate(); }
 

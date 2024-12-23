@@ -731,28 +731,6 @@ void RegExpMacroAssemblerPPC::PopRegExpBasePointer(Register stack_pointer_out,
   StoreRegExpStackPointerToMemory(stack_pointer_out, scratch);
 }
 
-void RegExpMacroAssemblerPPC::EncodePositionIndependentRegisterOutput(
-    Register relative_out, Register absolute_in, Register scratch) {
-  DCHECK(!AreAliased(absolute_in, scratch));
-  // pi = memory_top - register_output_vector
-  ExternalReference ref =
-      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
-  __ mov(scratch, Operand(ref));
-  __ LoadU64(scratch, MemOperand(scratch));
-  __ SubS64(relative_out, scratch, absolute_in);
-}
-
-void RegExpMacroAssemblerPPC::DecodePositionIndependentRegisterOutput(
-    Register absolute_out, Register relative_in, Register scratch) {
-  DCHECK(!AreAliased(relative_in, scratch));
-  // register_output_vector = memory_top - pi
-  ExternalReference ref =
-      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
-  __ mov(scratch, Operand(ref));
-  __ LoadU64(scratch, MemOperand(scratch));
-  __ SubS64(absolute_out, scratch, relative_in);
-}
-
 Handle<HeapObject> RegExpMacroAssemblerPPC::GetCode(Handle<String> source,
                                                     RegExpFlags flags) {
   Label return_r3;
@@ -810,12 +788,6 @@ Handle<HeapObject> RegExpMacroAssemblerPPC::GetCode(Handle<String> source,
     static_assert(kRegExpStackBasePointerOffset ==
                   kBacktrackCountOffset - kSystemPointerSize);
     __ push(r3);  // The regexp stack base ptr.
-
-    // Change the output_offsets_vector to be position-independent since the
-    // stack may grow and thus change location.
-    __ LoadU64(r29, MemOperand(frame_pointer(), kRegisterOutputOffset));
-    EncodePositionIndependentRegisterOutput(r29, r29, r4);
-    __ StoreU64(r29, MemOperand(frame_pointer(), kRegisterOutputOffset));
 
     // Initialize backtrack stack pointer. It must not be clobbered from here
     // on. Note the backtrack_stackpointer is callee-saved.
@@ -930,7 +902,6 @@ Handle<HeapObject> RegExpMacroAssemblerPPC::GetCode(Handle<String> source,
         // copy captures to output
         __ LoadU64(r4, MemOperand(frame_pointer(), kInputStartOffset));
         __ LoadU64(r3, MemOperand(frame_pointer(), kRegisterOutputOffset));
-        DecodePositionIndependentRegisterOutput(r3, r3, r5);
         __ LoadU64(r5, MemOperand(frame_pointer(), kStartIndexOffset));
         __ sub(r4, end_of_input_address(), r4);
         // r4 is length of input in bytes.
@@ -970,12 +941,9 @@ Handle<HeapObject> RegExpMacroAssemblerPPC::GetCode(Handle<String> source,
 
       if (global()) {
         // Restart matching if the regular expression is flagged as global.
-        // First persist the updated register output pointer.
-        EncodePositionIndependentRegisterOutput(r3, r3, r4);
-        __ StoreU64(r3, MemOperand(frame_pointer(), kRegisterOutputOffset));
-        // Then the rest:
         __ LoadU64(r3, MemOperand(frame_pointer(), kSuccessfulCapturesOffset));
         __ LoadU64(r4, MemOperand(frame_pointer(), kNumOutputRegistersOffset));
+        __ LoadU64(r5, MemOperand(frame_pointer(), kRegisterOutputOffset));
         // Increment success counter.
         __ addi(r3, r3, Operand(1));
         __ StoreU64(r3, MemOperand(frame_pointer(), kSuccessfulCapturesOffset));
@@ -987,6 +955,9 @@ Handle<HeapObject> RegExpMacroAssemblerPPC::GetCode(Handle<String> source,
         __ blt(&return_r3);
 
         __ StoreU64(r4, MemOperand(frame_pointer(), kNumOutputRegistersOffset));
+        // Advance the location for output.
+        __ addi(r5, r5, Operand(num_saved_registers_ * kIntSize));
+        __ StoreU64(r5, MemOperand(frame_pointer(), kRegisterOutputOffset));
 
         // Restore the original regexp stack pointer value (effectively, pop the
         // stored base pointer).
@@ -1171,6 +1142,7 @@ void RegExpMacroAssemblerPPC::PushBacktrack(Label* label) {
 
 void RegExpMacroAssemblerPPC::PushCurrentPosition() {
   Push(current_input_offset());
+  CheckStackLimit();
 }
 
 
@@ -1178,7 +1150,11 @@ void RegExpMacroAssemblerPPC::PushRegister(int register_index,
                                            StackCheckFlag check_stack_limit) {
   __ LoadU64(r3, register_location(register_index), r0);
   Push(r3);
-  if (check_stack_limit) CheckStackLimit();
+  if (check_stack_limit) {
+    CheckStackLimit();
+  } else if (V8_UNLIKELY(v8_flags.slow_debug_code)) {
+    AssertAboveStackLimitMinusSlack();
+  }
 }
 
 
@@ -1458,6 +1434,19 @@ void RegExpMacroAssemblerPPC::CheckStackLimit() {
   SafeCall(&stack_overflow_label_, le);
 }
 
+void RegExpMacroAssemblerPPC::AssertAboveStackLimitMinusSlack() {
+  DCHECK(v8_flags.slow_debug_code);
+  Label no_stack_overflow;
+  ASM_CODE_COMMENT_STRING(masm_.get(), "AssertAboveStackLimitMinusSlack");
+  auto l = ExternalReference::address_of_regexp_stack_limit_address(isolate());
+  __ mov(r3, Operand(l));
+  __ LoadU64(r3, MemOperand(r3));
+  __ SubS64(r3, r3, Operand(RegExpStack::kStackLimitSlackSize));
+  __ CmpU64(backtrack_stackpointer(), r3);
+  __ bgt(&no_stack_overflow);
+  __ DebugBreak();
+  __ bind(&no_stack_overflow);
+}
 
 void RegExpMacroAssemblerPPC::LoadCurrentCharacterUnchecked(int cp_offset,
                                                             int characters) {

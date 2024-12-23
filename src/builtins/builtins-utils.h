@@ -69,7 +69,7 @@ class BuiltinArguments : public JavaScriptArguments {
 
   // Zero index states for receiver.
   inline Handle<Object> atOrUndefined(Isolate* isolate, int index) const;
-  inline Handle<Object> receiver() const;
+  inline Handle<JSAny> receiver() const;
   inline Handle<JSFunction> target() const;
   inline Handle<HeapObject> new_target() const;
 
@@ -173,7 +173,7 @@ static_assert(BuiltinArguments::kNumExtraArgsWithReceiver ==
         NewTypeError(MessageTemplate::kCalledOnNullOrUndefined,               \
                      isolate->factory()->NewStringFromAsciiChecked(method))); \
   }                                                                           \
-  Handle<String> name;                                                        \
+  DirectHandle<String> name;                                                  \
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(                                         \
       isolate, name, Object::ToString(isolate, args.receiver()))
 

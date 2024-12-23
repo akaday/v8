@@ -53,6 +53,34 @@ FieldAccess AccessBuilder::ForHeapNumberValue() {
 }
 
 // static
+FieldAccess AccessBuilder::ForHeapInt32Value() {
+  FieldAccess access = {
+      kTaggedBase,
+      offsetof(HeapNumber, value_) + kIeeeDoubleMantissaWordOffset,
+      MaybeHandle<Name>(),
+      OptionalMapRef(),
+      TypeCache::Get()->kInt32,
+      MachineType::Int32(),
+      kNoWriteBarrier,
+      "HeapInt32Value"};
+  return access;
+}
+
+// static
+FieldAccess AccessBuilder::ForHeapInt32UpperValue() {
+  FieldAccess access = {
+      kTaggedBase,
+      offsetof(HeapNumber, value_) + kIeeeDoubleExponentWordOffset,
+      MaybeHandle<Name>(),
+      OptionalMapRef(),
+      TypeCache::Get()->kInt32,
+      MachineType::Int32(),
+      kNoWriteBarrier,
+      "HeapInt32ValueUpperValue"};
+  return access;
+}
+
+// static
 FieldAccess AccessBuilder::ForHeapNumberOrOddballOrHoleValue() {
   STATIC_ASSERT_FIELD_OFFSETS_EQUAL(offsetof(HeapNumber, value_),
                                     offsetof(Oddball, to_number_raw_));
@@ -515,22 +543,6 @@ FieldAccess AccessBuilder::ForJSArrayBufferViewBitField() {
                         MachineType::Uint32(),
                         kNoWriteBarrier,
                         "JSArrayBufferViewBitField"};
-  return access;
-}
-
-// static
-FieldAccess AccessBuilder::ForJSTypedArrayLength() {
-  FieldAccess access = {kTaggedBase,
-                        JSTypedArray::kRawLengthOffset,
-                        MaybeHandle<Name>(),
-                        OptionalMapRef(),
-                        TypeCache::Get()->kJSTypedArrayLengthType,
-                        MachineType::UintPtr(),
-                        kNoWriteBarrier,
-                        "JSTypedArrayLength"};
-#ifdef V8_ENABLE_SANDBOX
-  access.is_bounded_size_access = true;
-#endif
   return access;
 }
 
@@ -1136,6 +1148,18 @@ FieldAccess AccessBuilder::ForContextSlotKnownPointer(size_t index) {
 }
 
 // static
+FieldAccess AccessBuilder::ForContextSlotSmi(size_t index) {
+  int offset = Context::OffsetOfElementAt(static_cast<int>(index));
+  DCHECK_EQ(offset,
+            Context::SlotOffset(static_cast<int>(index)) + kHeapObjectTag);
+  FieldAccess access = {kTaggedBase,         offset,
+                        Handle<Name>(),      OptionalMapRef(),
+                        Type::SignedSmall(), MachineType::TaggedSigned(),
+                        kNoWriteBarrier,     "Smi"};
+  return access;
+}
+
+// static
 ElementAccess AccessBuilder::ForFixedArrayElement() {
   ElementAccess access = {kTaggedBase, OFFSET_OF_DATA_START(FixedArray),
                           Type::Any(), MachineType::AnyTagged(),
@@ -1542,6 +1566,16 @@ FieldAccess AccessBuilder::ForWasmDispatchTableLength() {
           "WasmDispatchTableLength"};
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
+
+// static
+FieldAccess AccessBuilder::ForContextSideProperty() {
+  FieldAccess access = {
+      kTaggedBase,         ContextSidePropertyCell::kPropertyDetailsRawOffset,
+      MaybeHandle<Name>(), OptionalMapRef(),
+      Type::SignedSmall(), MachineType::TaggedSigned(),
+      kNoWriteBarrier,     "ContextSidePropertyDetails"};
+  return access;
+}
 
 }  // namespace compiler
 }  // namespace internal

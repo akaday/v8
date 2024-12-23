@@ -631,11 +631,11 @@ class FastApiCallReducerAssembler : public JSCallReducerAssembler {
   FastApiCallReducerAssembler(
       JSCallReducer* reducer, Node* node,
       const FunctionTemplateInfoRef function_template_info,
-      const FastApiCallFunctionVector& c_candidate_functions, Node* receiver,
-      Node* holder, const SharedFunctionInfoRef shared, Node* target,
-      const int arity, Node* effect)
+      FastApiCallFunction c_function, Node* receiver, Node* holder,
+      const SharedFunctionInfoRef shared, Node* target, const int arity,
+      Node* effect)
       : JSCallReducerAssembler(reducer, node),
-        c_candidate_functions_(c_candidate_functions),
+        c_function_(c_function),
         function_template_info_(function_template_info),
         receiver_(receiver),
         holder_(holder),
@@ -643,7 +643,6 @@ class FastApiCallReducerAssembler : public JSCallReducerAssembler {
         target_(target),
         arity_(arity) {
     DCHECK_EQ(IrOpcode::kJSCall, node->opcode());
-    CHECK_GT(c_candidate_functions.size(), 0);
     InitializeEffectControl(effect, NodeProperties::GetControlInput(node));
   }
 
@@ -655,7 +654,7 @@ class FastApiCallReducerAssembler : public JSCallReducerAssembler {
     // All functions in c_candidate_functions_ have the same number of
     // arguments, so extract c_argument_count from the first function.
     const int c_argument_count =
-        static_cast<int>(c_candidate_functions_[0].signature->ArgumentCount());
+        static_cast<int>(c_function_.signature->ArgumentCount());
     CHECK_GE(c_argument_count, kReceiver);
 
     const int slow_arg_count =
@@ -756,13 +755,12 @@ class FastApiCallReducerAssembler : public JSCallReducerAssembler {
 
   TNode<Object> FastApiCall(CallDescriptor* descriptor, Node** inputs,
                             size_t inputs_size) {
-    return AddNode<Object>(
-        graph()->NewNode(simplified()->FastApiCall(c_candidate_functions_,
-                                                   feedback(), descriptor),
-                         static_cast<int>(inputs_size), inputs));
+    return AddNode<Object>(graph()->NewNode(
+        simplified()->FastApiCall(c_function_, feedback(), descriptor),
+        static_cast<int>(inputs_size), inputs));
   }
 
-  const FastApiCallFunctionVector c_candidate_functions_;
+  FastApiCallFunction c_function_;
   const FunctionTemplateInfoRef function_template_info_;
   Node* const receiver_;
   Node* const holder_;
@@ -3843,12 +3841,6 @@ Reduction JSCallReducer::ReduceCallWasmFunction(Node* node,
     wasm_module_for_inlining_ = wasm_module;
   }
 
-  // Bail out if we are not calling an actual Wasm function.
-  // TODO(375314963): Remove this again.
-  Tagged<TrustedObject> implicit_arg =
-      function_data->internal()->implicit_arg();
-  if (!IsWasmTrustedInstanceData(implicit_arg)) return NoChange();
-
   // TODO(mliedtke): We should be able to remove module, signature, native
   // module and function index from the SharedFunctionInfoRef. However, for some
   // reason I may dereference the SharedFunctionInfoRef here but not in
@@ -3884,59 +3876,6 @@ Reduction JSCallReducer::ReduceCallWasmFunction(Node* node,
   return Changed(node);
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
-
-// Given a FunctionTemplateInfo, checks whether the fast API call can be
-// optimized, applying the initial step of the overload resolution algorithm:
-// Given an overload set function_template_info.c_signatures, and a list of
-// arguments of size arg_count:
-// 1. Remove from the set all entries whose type list is not of length
-//    arg_count.
-// Returns an array with the indexes of the remaining entries in S, which
-// represents the set of "optimizable" function overloads.
-
-FastApiCallFunctionVector CanOptimizeFastCall(
-    JSHeapBroker* broker, Zone* zone,
-    FunctionTemplateInfoRef function_template_info, size_t arg_count) {
-  FastApiCallFunctionVector result(zone);
-  if (!v8_flags.turbo_fast_api_calls) return result;
-
-  static constexpr int kReceiver = 1;
-
-  ZoneVector<Address> functions = function_template_info.c_functions(broker);
-  ZoneVector<const CFunctionInfo*> signatures =
-      function_template_info.c_signatures(broker);
-  const size_t overloads_count = signatures.size();
-
-  // Only considers entries whose type list length matches arg_count.
-  for (size_t i = 0; i < overloads_count; i++) {
-    const CFunctionInfo* c_signature = signatures[i];
-    const size_t len = c_signature->ArgumentCount() - kReceiver;
-    bool optimize_to_fast_call = (len == arg_count);
-
-    optimize_to_fast_call =
-        optimize_to_fast_call &&
-        fast_api_call::CanOptimizeFastSignature(c_signature);
-
-    if (optimize_to_fast_call) {
-      // TODO(nicohartmann@): {Flags::kEnforceRangeBit} is currently only
-      // supported on 64 bit architectures. We should support this on 32 bit
-      // architectures.
-#if defined(V8_TARGET_ARCH_32_BIT)
-      for (unsigned int i = 0; i < c_signature->ArgumentCount(); ++i) {
-        const uint8_t flags =
-            static_cast<uint8_t>(c_signature->ArgumentInfo(i).GetFlags());
-        if (flags & static_cast<uint8_t>(CTypeInfo::Flags::kEnforceRangeBit)) {
-          // Bailout
-          return FastApiCallFunctionVector(zone);
-        }
-      }
-#endif
-      result.push_back({functions[i], c_signature});
-    }
-  }
-
-  return result;
-}
 
 Reduction JSCallReducer::ReduceCallApiFunction(Node* node,
                                                SharedFunctionInfoRef shared) {
@@ -4118,15 +4057,13 @@ Reduction JSCallReducer::ReduceCallApiFunction(Node* node,
   }
 
   // Handles overloaded functions.
+  FastApiCallFunction c_function = fast_api_call::GetFastApiCallTarget(
+      broker(), function_template_info, argc);
 
-  FastApiCallFunctionVector c_candidate_functions = CanOptimizeFastCall(
-      broker(), graph()->zone(), function_template_info, argc);
-  DCHECK_LE(c_candidate_functions.size(), 2);
-
-  if (!c_candidate_functions.empty()) {
+  if (c_function.address) {
     FastApiCallReducerAssembler a(this, node, function_template_info,
-                                  c_candidate_functions, receiver, holder,
-                                  shared, target, argc, effect);
+                                  c_function, receiver, holder, shared, target,
+                                  argc, effect);
     Node* fast_call_subgraph = a.ReduceFastApiCall();
 
     return Replace(fast_call_subgraph);
@@ -6659,12 +6596,23 @@ Reduction JSCallReducer::ReduceArrayIteratorPrototypeNext(Node* node) {
   // Load the length of the {iterated_object}. Due to the map checks we
   // already know something about the length here, which we can leverage
   // to generate Word32 operations below without additional checking.
-  FieldAccess length_access =
-      IsTypedArrayElementsKind(elements_kind)
-          ? AccessBuilder::ForJSTypedArrayLength()
-          : AccessBuilder::ForJSArrayLength(elements_kind);
-  Node* length = effect = graph()->NewNode(
-      simplified()->LoadField(length_access), iterated_object, effect, control);
+  Node* length;
+  if (IsTypedArrayElementsKind(elements_kind)) {
+    Node* byte_length = effect = graph()->NewNode(
+        simplified()->LoadField(AccessBuilder::ForJSTypedArrayByteLength()),
+        iterated_object, effect, control);
+    Node* byte_length_shifted = graph()->NewNode(
+        jsgraph()->machine()->WordShr(), byte_length,
+        jsgraph()->UintPtrConstant(ElementsKindToShiftSize(elements_kind)));
+    length = graph()->NewNode(
+        common()->ExitMachineGraph(MachineType::PointerRepresentation(),
+                                   TypeCache::Get()->kJSTypedArrayLengthType),
+        byte_length_shifted);
+  } else {
+    length = effect = graph()->NewNode(
+        simplified()->LoadField(AccessBuilder::ForJSArrayLength(elements_kind)),
+        iterated_object, effect, control);
+  }
 
   // Check whether {index} is within the valid range for the {iterated_object}.
   Node* check = graph()->NewNode(simplified()->NumberLessThan(), index, length);
@@ -7846,9 +7794,9 @@ Reduction JSCallReducer::ReduceTypedArrayPrototypeLength(Node* node) {
     Reduction unused_reduction = inference.NoChange();
     USE(unused_reduction);
     // Call default implementation for non-rab/gsab TAs.
-    return ReduceArrayBufferViewAccessor(node, JS_TYPED_ARRAY_TYPE,
-                                         AccessBuilder::ForJSTypedArrayLength(),
-                                         Builtin::kTypedArrayPrototypeLength);
+    return ReduceArrayBufferViewAccessor(
+        node, JS_TYPED_ARRAY_TYPE, AccessBuilder::ForJSTypedArrayByteLength(),
+        Builtin::kTypedArrayPrototypeLength);
   }
 
   if (!inference.RelyOnMapsViaStability(dependencies())) {
@@ -8375,9 +8323,9 @@ Reduction JSCallReducer::ReduceArrayBufferViewAccessor(
     Node* node, InstanceType instance_type, FieldAccess const& access,
     Builtin builtin) {
   // TODO(v8:11111): Optimize for JS_RAB_GSAB_DATA_VIEW_TYPE too.
-  Node* receiver = NodeProperties::GetValueInput(node, 1);
+  TNode<JSArrayBufferView> receiver = TNode<JSArrayBufferView>::UncheckedCast(
+      NodeProperties::GetValueInput(node, 1));
   Effect effect{NodeProperties::GetEffectInput(node)};
-  Control control{NodeProperties::GetControlInput(node)};
 
   MapInference inference(broker(), receiver, effect);
   if (!inference.HaveMaps() ||
@@ -8406,38 +8354,48 @@ Reduction JSCallReducer::ReduceArrayBufferViewAccessor(
     return inference.NoChange();
   }
 
+  JSCallReducerAssembler a(this, node, effect);
+
   // Load the {receiver}s field.
-  Node* value = effect = graph()->NewNode(simplified()->LoadField(access),
-                                          receiver, effect, control);
+  DCHECK_EQ(access.machine_type.representation(),
+            MachineType::PointerRepresentation());
+  TNode<UintPtrT> value = a.EnterMachineGraph<UintPtrT>(
+      a.LoadField<UintPtrT>(access, receiver), UseInfo::Word());
 
   // See if we can skip the detaching check.
   if (!depended_on_detaching_protector) {
     // Check whether {receiver}s JSArrayBuffer was detached.
-    Node* buffer = effect = graph()->NewNode(
-        simplified()->LoadField(AccessBuilder::ForJSArrayBufferViewBuffer()),
-        receiver, effect, control);
-    Node* buffer_bit_field = effect = graph()->NewNode(
-        simplified()->LoadField(AccessBuilder::ForJSArrayBufferBitField()),
-        buffer, effect, control);
-    Node* check = graph()->NewNode(
-        simplified()->NumberEqual(),
-        graph()->NewNode(
-            simplified()->NumberBitwiseAnd(), buffer_bit_field,
-            jsgraph()->ConstantNoHole(JSArrayBuffer::WasDetachedBit::kMask)),
-        jsgraph()->ZeroConstant());
+    TNode<HeapObject> buffer = a.LoadField<HeapObject>(
+        AccessBuilder::ForJSArrayBufferViewBuffer(), receiver);
+    TNode<Word32T> bitfield = a.EnterMachineGraph<Word32T>(
+        a.LoadField<Word32T>(AccessBuilder::ForJSArrayBufferBitField(), buffer),
+        UseInfo::TruncatingWord32());
+    TNode<Word32T> detached_bit = a.Word32And(
+        bitfield, a.Uint32Constant(JSArrayBuffer::WasDetachedBit::kMask));
 
     // TODO(turbofan): Ideally we would bail out here if the {receiver}s
     // JSArrayBuffer was detached, but there's no way to guard against
     // deoptimization loops right now, since the JSCall {node} is usually
     // created from a LOAD_IC inlining, and so there's no CALL_IC slot
     // from which we could use the speculation bit.
-    value = graph()->NewNode(
-        common()->Select(MachineRepresentation::kTagged, BranchHint::kTrue),
-        check, value, jsgraph()->ZeroConstant());
+    value = a.MachineSelect<UintPtrT>(detached_bit, a.UintPtrConstant(0), value,
+                                      BranchHint::kFalse);
   }
 
-  ReplaceWithValue(node, value, effect, control);
-  return Replace(value);
+  if (builtin == Builtin::kTypedArrayPrototypeLength) {
+    TNode<UintPtrT> byte_length = value;
+    // Divide the byte length by element size.
+    TNode<Map> map = a.LoadMap(TNode<HeapObject>::UncheckedCast(receiver));
+    TNode<Uint32T> elements_kind = a.LoadElementsKind(map);
+    TNode<Uint32T> shift = a.LookupByteShiftForElementsKind(elements_kind);
+    value = TNode<UintPtrT>::UncheckedCast(
+        a.WordShr(byte_length, a.ChangeUint32ToUintPtr(shift)));
+  }
+
+  TNode<Number> result =
+      a.ExitMachineGraph<Number>(value, MachineType::PointerRepresentation(),
+                                 TypeCache::Get()->kJSTypedArrayLengthType);
+  return ReplaceWithSubgraph(&a, result);
 }
 
 Reduction JSCallReducer::ReduceDataViewAccess(Node* node, DataViewAccess access,

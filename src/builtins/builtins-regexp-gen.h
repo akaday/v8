@@ -42,6 +42,9 @@ class RegExpBuiltinsAssembler : public CodeStubAssembler {
   void SlowStoreLastIndex(TNode<Context> context, TNode<Object> regexp,
                           TNode<Object> value);
 
+  TNode<Smi> LoadCaptureCount(TNode<RegExpData> data);
+  TNode<Smi> RegistersForCaptureCount(TNode<Smi> capture_count);
+
   // Loads {var_string_start} and {var_string_end} with the corresponding
   // offsets into the given {string_data}.
   void GetStringPointers(TNode<RawPtrT> string_data, TNode<IntPtrT> offset,
@@ -51,10 +54,13 @@ class RegExpBuiltinsAssembler : public CodeStubAssembler {
                          TVariable<RawPtrT>* var_string_start,
                          TVariable<RawPtrT>* var_string_end);
 
-  // Allocate and drop slots on the regexp stack (see also RegExpStack).
-  TNode<RawPtrT> LoadRegExpStackStackPointer();
-  TNode<RawPtrT> RegExpStackClaimInt32Slots(TNode<Smi> count);
-  void RegExpStackDropInt32Slots(TNode<Smi> count);
+  // Returns the vector and whether the returned vector was dynamically
+  // allocated. Both must be passed to FreeRegExpResultVector when done,
+  // even for exceptional control flow.
+  std::pair<TNode<RawPtrT>, TNode<BoolT>> LoadOrAllocateRegExpResultVector(
+      TNode<Smi> register_count);
+  void FreeRegExpResultVector(TNode<RawPtrT> result_vector,
+                              TNode<BoolT> is_dynamic);
 
   TNode<RegExpMatchInfo> InitializeMatchInfoFromRegisters(
       TNode<Context> context, TNode<RegExpMatchInfo> match_info,
@@ -62,10 +68,16 @@ class RegExpBuiltinsAssembler : public CodeStubAssembler {
       TNode<RawPtrT> result_offsets_vector);
 
   // Low level logic around the actual call into pattern matching code.
-  TNode<HeapObject> RegExpExecInternal(
-      TNode<Context> context, TNode<JSRegExp> regexp, TNode<String> string,
-      TNode<Number> last_index, TNode<RegExpMatchInfo> match_info,
-      RegExp::ExecQuirks exec_quirks = RegExp::ExecQuirks::kNone);
+  //
+  // TODO(jgruber): Callers that either 1. don't need the RegExpMatchInfo, or
+  // 2. need multiple matches, should switch to the new API which passes
+  // results via an offsets vector and allows returning multiple matches per
+  // call. See RegExpExecInternal_Batched.
+  TNode<RegExpMatchInfo> RegExpExecInternal_Single(TNode<Context> context,
+                                                   TNode<JSRegExp> regexp,
+                                                   TNode<String> string,
+                                                   TNode<Number> last_index,
+                                                   Label* if_not_matched);
 
   // This is the new API which makes it possible to use the global irregexp
   // execution mode from within CSA.
@@ -80,26 +92,17 @@ class RegExpBuiltinsAssembler : public CodeStubAssembler {
   //   matches, but we return '9', then all matches have been found.
   // - Subtle: The above point requires that all implementations ALWAYS return
   //   the maximum number of matches they can.
-  // - Subtle: The regexp stack may grow, i.e. move, during irregexp execution.
-  //   Since result_offsets_vector is allocated on it, it may also move. Reload
-  //   it after irregexp execution.
-  //
-  // TODO(jgruber): Consider changing the irregexp signature s.t. it returns
-  // the result_offsets_vector pointer on success. We would then no longer have
-  // to reload it.
-  // TODO(jgruber): All callers of RegExpExecInternal should
-  // be ported to this, and the old API should be removed once done.
-  TNode<UintPtrT> RegExpExecInternal2(
-      TNode<Context> context, TNode<JSRegExp> regexp, TNode<String> string,
-      TNode<Number> last_index, TNode<RawPtrT> result_offsets_vector,
-      TNode<Int32T> result_offsets_vector_length,
-      RegExp::ExecQuirks exec_quirks = RegExp::ExecQuirks::kNone);
+  TNode<UintPtrT> RegExpExecInternal(
+      TNode<Context> context, TNode<JSRegExp> regexp, TNode<RegExpData> data,
+      TNode<String> string, TNode<Number> last_index,
+      TNode<RawPtrT> result_offsets_vector,
+      TNode<Int32T> result_offsets_vector_length);
 
-  TNode<UintPtrT> RegExpExecAtom2(TNode<Context> context,
-                                  TNode<JSRegExp> regexp, TNode<String> string,
-                                  TNode<Smi> last_index,
-                                  TNode<RawPtrT> result_offsets_vector,
-                                  TNode<Int32T> result_offsets_vector_length);
+  TNode<UintPtrT> RegExpExecAtom(TNode<Context> context,
+                                 TNode<AtomRegExpData> data,
+                                 TNode<String> string, TNode<Smi> last_index,
+                                 TNode<RawPtrT> result_offsets_vector,
+                                 TNode<Int32T> result_offsets_vector_length);
 
   // This is a wrapper around using the global irregexp mode, i.e. the mode in
   // which a single call into irregexp may return multiple matches.  The
@@ -222,20 +225,22 @@ class RegExpBuiltinsAssembler : public CodeStubAssembler {
 
   TNode<JSArray> RegExpPrototypeSplitBody(TNode<Context> context,
                                           TNode<JSRegExp> regexp,
-                                          const TNode<String> string,
-                                          const TNode<Smi> limit);
+                                          TNode<String> string,
+                                          TNode<Smi> limit);
 
-  TNode<HeapObject> RegExpMatchGlobalIrregexp(TNode<Context> context,
-                                              TNode<JSRegExp> regexp,
-                                              TNode<String> subject,
-                                              TNode<RegExpData> data);
+  TNode<HeapObject> RegExpMatchGlobal(TNode<Context> context,
+                                      TNode<JSRegExp> regexp,
+                                      TNode<String> subject,
+                                      TNode<RegExpData> data);
   TNode<String> AppendStringSlice(TNode<Context> context,
                                   TNode<String> to_string,
                                   TNode<String> from_string,
                                   TNode<Smi> slice_start, TNode<Smi> slice_end);
-  TNode<String> RegExpReplaceGlobalSimpleStringIrregexp(
-      TNode<Context> context, TNode<JSRegExp> regexp, TNode<String> subject,
-      TNode<RegExpData> data, TNode<String> replace_string);
+  TNode<String> RegExpReplaceGlobalSimpleString(TNode<Context> context,
+                                                TNode<JSRegExp> regexp,
+                                                TNode<String> subject,
+                                                TNode<RegExpData> data,
+                                                TNode<String> replace_string);
 };
 
 class RegExpMatchAllAssembler : public RegExpBuiltinsAssembler {

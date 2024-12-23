@@ -705,6 +705,7 @@ class LiftoffAssembler : public MacroAssembler {
                                    int32_t offset);
   inline void LoadFullPointer(Register dst, Register src_addr,
                               int32_t offset_imm);
+  inline void LoadCodePointer(Register dst, Register src_addr, int32_t offset);
 #ifdef V8_ENABLE_SANDBOX
   inline void LoadCodeEntrypointViaCodePointer(Register dsr, Register src_addr,
                                                int offset_imm);
@@ -1544,7 +1545,8 @@ class LiftoffAssembler : public MacroAssembler {
   inline void CallIndirect(const ValueKindSig* sig,
                            compiler::CallDescriptor* call_descriptor,
                            Register target);
-  inline void TailCallIndirect(Register target);
+  inline void TailCallIndirect(compiler::CallDescriptor* call_descriptor,
+                               Register target);
   inline void CallBuiltin(Builtin builtin);
 
   // Reserve space in the current frame, store address to space in {addr}.
@@ -1554,13 +1556,18 @@ class LiftoffAssembler : public MacroAssembler {
   // Instrumentation for shadow-stack-compatible OSR on x64.
   inline void MaybeOSR();
 
-  // Set the i32 at address dst to a non-zero value if src is a NaN.
-  inline void emit_set_if_nan(Register dst, DoubleRegister src, ValueKind kind);
+  // Set the i32 at address {dst} to a non-zero value if {src} is a NaN.
+  inline void emit_store_nonzero_if_nan(Register dst, DoubleRegister src,
+                                        ValueKind kind);
 
-  // Set the i32 at address dst to a non-zero value if src contains a NaN.
-  inline void emit_s128_set_if_nan(Register dst, LiftoffRegister src,
-                                   Register tmp_gp, LiftoffRegister tmp_s128,
-                                   ValueKind lane_kind);
+  // Set the i32 at address {dst} to a non-zero value if {src} contains a NaN.
+  inline void emit_s128_store_nonzero_if_nan(Register dst, LiftoffRegister src,
+                                             Register tmp_gp,
+                                             LiftoffRegister tmp_s128,
+                                             ValueKind lane_kind);
+
+  // Unconditinally set the i32 at address {dst} to a non-zero value.
+  inline void emit_store_nonzero(Register dst);
 
   inline bool supports_f16_mem_access();
 

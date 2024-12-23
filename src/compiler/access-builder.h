@@ -36,6 +36,8 @@ class V8_EXPORT_PRIVATE AccessBuilder final
 
   // Provides access to HeapNumber::value() field.
   static FieldAccess ForHeapNumberValue();
+  static FieldAccess ForHeapInt32Value();
+  static FieldAccess ForHeapInt32UpperValue();
 
   // Provides access to HeapNumber::value() and Oddball::to_number_raw() fields.
   // This is the same as ForHeapNumberValue, except it documents (and static
@@ -168,9 +170,6 @@ class V8_EXPORT_PRIVATE AccessBuilder final
 
   // Provides access to JSArrayBufferView::bitfield() field
   static FieldAccess ForJSArrayBufferViewBitField();
-
-  // Provides access to JSTypedArray::length() field.
-  static FieldAccess ForJSTypedArrayLength();
 
   // Provides access to JSTypedArray::byteLength() field.
   static FieldAccess ForJSTypedArrayByteLength() {
@@ -334,6 +333,9 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   // Provides access to Context slots that are known to be pointers.
   static FieldAccess ForContextSlotKnownPointer(size_t index);
 
+  // Provides access to Context slots that are known to be Smis.
+  static FieldAccess ForContextSlotSmi(size_t index);
+
   // Provides access to WeakFixedArray elements.
   static ElementAccess ForWeakFixedArrayElement();
   static FieldAccess ForWeakFixedArraySlot(int index);
@@ -397,6 +399,8 @@ class V8_EXPORT_PRIVATE AccessBuilder final
   static FieldAccess ForWasmArrayLength();
   static FieldAccess ForWasmDispatchTableLength();
 #endif
+
+  static FieldAccess ForContextSideProperty();
 
  private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(AccessBuilder);

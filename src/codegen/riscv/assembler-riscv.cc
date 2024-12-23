@@ -78,7 +78,7 @@ static unsigned CpuFeaturesImpliedByCompiler() {
   return answer;
 }
 
-#ifdef USE_SIMULATOR
+#ifdef _RISCV_TARGET_SIMULATOR
 static unsigned SimulatorFeatures() {
   unsigned answer = 0;
   answer |= 1u << RISCV_SIMD;
@@ -95,13 +95,15 @@ bool CpuFeatures::SupportsWasmSimd128() { return IsSupported(RISCV_SIMD); }
 
 void CpuFeatures::ProbeImpl(bool cross_compile) {
   supported_ |= CpuFeaturesImpliedByCompiler();
+
+#ifdef _RISCV_TARGET_SIMULATOR
+  supported_ |= SimulatorFeatures();
+#endif  // _RISCV_TARGET_SIMULATOR
   // Only use statically determined features for cross compile (snapshot).
   if (cross_compile) return;
   // Probe for additional features at runtime.
 
-#ifdef USE_SIMULATOR
-  supported_ |= SimulatorFeatures();
-#else
+#ifndef USE_SIMULATOR
   base::CPU cpu;
   if (cpu.has_fpu()) supported_ |= 1u << FPU;
   if (cpu.has_rvv()) supported_ |= 1u << RISCV_SIMD;
@@ -128,8 +130,9 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
 void CpuFeatures::PrintTarget() {}
 void CpuFeatures::PrintFeatures() {
   printf("supports_wasm_simd_128=%d\n", CpuFeatures::SupportsWasmSimd128());
-  printf("zba=%d,zbb=%d,zbs=%d\n", CpuFeatures::IsSupported(ZBA),
-         CpuFeatures::IsSupported(ZBB), CpuFeatures::IsSupported(ZBS));
+  printf("RISC-V Extension zba=%d,zbb=%d,zbs=%d,ZICOND=%d\n",
+         CpuFeatures::IsSupported(ZBA), CpuFeatures::IsSupported(ZBB),
+         CpuFeatures::IsSupported(ZBS), CpuFeatures::IsSupported(ZICOND));
 }
 int ToNumber(Register reg) {
   DCHECK(reg.is_valid());
@@ -214,8 +217,9 @@ uint32_t RelocInfo::wasm_call_tag() const {
 // Implementation of Operand and MemOperand.
 // See assembler-riscv-inl.h for inlined constructors.
 
-Operand::Operand(Handle<HeapObject> handle)
-    : rm_(no_reg), rmode_(RelocInfo::FULL_EMBEDDED_OBJECT) {
+Operand::Operand(Handle<HeapObject> handle, RelocInfo::Mode rmode)
+    : rm_(no_reg), rmode_(rmode) {
+  DCHECK(RelocInfo::IsEmbeddedObjectMode(rmode) || RelocInfo::IsNoInfo(rmode));
   value_.immediate = static_cast<intptr_t>(handle.address());
 }
 
@@ -245,7 +249,8 @@ void Assembler::AllocateAndInstallRequestedHeapNumbers(LocalIsolate* isolate) {
         isolate->factory()->NewHeapNumber<AllocationType::kOld>(
             request.heap_number());
     Address pc = reinterpret_cast<Address>(buffer_start_) + request.offset();
-    set_target_value_at(pc, reinterpret_cast<uintptr_t>(object.location()));
+    EmbeddedObjectIndex index = AddEmbeddedObject(object);
+    set_embedded_object_index_referenced_from(pc, index);
   }
 }
 
@@ -409,7 +414,7 @@ int Assembler::target_at(int pos, bool is_internal) {
     }
     case LUI: {
       Address pc = reinterpret_cast<Address>(buffer_start_ + pos);
-      pc = target_address_at(pc);
+      pc = target_constant_address_at(pc);
       uintptr_t instr_address =
           reinterpret_cast<uintptr_t>(buffer_start_ + pos);
       uintptr_t imm = reinterpret_cast<uintptr_t>(pc);
@@ -1277,7 +1282,7 @@ void Assembler::li_constant(Register rd, int32_t imm) {
 void Assembler::break_(uint32_t code, bool break_as_stop) {
   // We need to invalidate breaks that could be stops as well because the
   // simulator expects a char pointer after the stop instruction.
-  // See constants-mips.h for explanation.
+  // See base-constants-riscv.h for explanation.
   DCHECK(
       (break_as_stop && code <= kMaxStopCode && code > kMaxTracepointCode) ||
       (!break_as_stop && (code > kMaxStopCode || code <= kMaxTracepointCode)));
@@ -1363,7 +1368,7 @@ int Assembler::RelocateInternalReference(RelocInfo::Mode rmode, Address pc,
   Instr instr = instr_at(pc);
   DCHECK(RelocInfo::IsInternalReferenceEncoded(rmode));
   if (IsLui(instr)) {
-    uintptr_t target_address = target_address_at(pc) + pc_delta;
+    uintptr_t target_address = target_constant_address_at(pc) + pc_delta;
     DEBUG_PRINTF("\ttarget_address 0x%" PRIxPTR "\n", target_address);
     set_target_value_at(pc, target_address);
 #if V8_TARGET_ARCH_RISCV64
@@ -1384,7 +1389,8 @@ void Assembler::RelocateRelativeReference(RelocInfo::Mode rmode, Address pc,
                                           intptr_t pc_delta) {
   Instr instr = instr_at(pc);
   Instr instr1 = instr_at(pc + 1 * kInstrSize);
-  DCHECK(RelocInfo::IsRelativeCodeTarget(rmode));
+  DCHECK(RelocInfo::IsRelativeCodeTarget(rmode) ||
+         RelocInfo::IsNearBuiltinEntry(rmode));
   if (IsAuipc(instr) && IsJalr(instr1)) {
     int32_t imm;
     imm = BrachlongOffset(instr, instr1);
@@ -1590,6 +1596,24 @@ void Assembler::set_target_address_at(Address pc, Address constant_pool,
   }
 }
 
+void Assembler::set_target_address_at(Address pc, Address target,
+                                      WritableJitAllocation* jit_allocation,
+                                      ICacheFlushMode icache_flush_mode) {
+  Instr instr1 = Assembler::instr_at(pc);
+  Instr instr2 = Assembler::instr_at(pc + kInstrSize);
+  if (IsAuipc(instr1)) {
+    DCHECK(IsLd(instr2));
+    int32_t embedded_target_offset = BrachlongOffset(instr1, instr2);
+    if (jit_allocation) {
+      jit_allocation->WriteValue<Address>(pc + embedded_target_offset, target);
+    } else {
+      Memory<Address>(pc + embedded_target_offset) = target;
+    }
+  } else {
+    set_target_value_at(pc, target, jit_allocation, icache_flush_mode);
+  }
+}
+
 Address Assembler::target_address_at(Address pc, Address constant_pool) {
   Instr* instr = reinterpret_cast<Instr*>(pc);
   if (IsAuipc(*instr)) {
@@ -1609,13 +1633,12 @@ Address Assembler::target_address_at(Address pc, Address constant_pool) {
     }
 
   } else {
-    return target_address_at(pc);
+    return target_constant_address_at(pc);
   }
 }
 
 #if V8_TARGET_ARCH_RISCV64
-Address Assembler::target_address_at(Address pc) {
-  DEBUG_PRINTF("target_address_at: pc: %lx\t", pc);
+Address Assembler::target_constant_address_at(Address pc) {
 #ifdef RISCV_USE_SV39
   Instruction* instr0 = Instruction::At((unsigned char*)pc);
   Instruction* instr1 = Instruction::At((unsigned char*)(pc + 1 * kInstrSize));
@@ -1657,7 +1680,7 @@ Address Assembler::target_address_at(Address pc) {
     addr <<= 6;
     addr |= (int64_t)instr5->Imm12Value();
 #endif
-    DEBUG_PRINTF("addr: %" PRIx64 "\n", addr);
+    DEBUG_PRINTF("\taddr: %" PRIx64 "\n", addr);
     return static_cast<Address>(addr);
   }
   // We should never get here, force a bad address if we do.
@@ -1683,8 +1706,9 @@ Address Assembler::target_address_at(Address pc) {
 void Assembler::set_target_value_at(Address pc, uint64_t target,
                                     WritableJitAllocation* jit_allocation,
                                     ICacheFlushMode icache_flush_mode) {
-  DEBUG_PRINTF("set_target_value_at: pc: %" PRIxPTR "\ttarget: %" PRIx64 "\n",
-               pc, target);
+  DEBUG_PRINTF("set_target_value_at: pc: %" PRIxPTR "\ttarget: %" PRIx64
+               "\told: %" PRIx64 "\n",
+               pc, target, target_address_at(pc, static_cast<Address>(0)));
   uint32_t* p = reinterpret_cast<uint32_t*>(pc);
 #ifdef RISCV_USE_SV39
   DCHECK_EQ((target & 0xffffff8000000000ll), 0);
@@ -1746,14 +1770,14 @@ void Assembler::set_target_value_at(Address pc, uint64_t target,
     FlushInstructionCache(pc, 8 * kInstrSize);
   }
 #endif
-  DCHECK_EQ(target_address_at(pc), target);
+  DCHECK_EQ(target_constant_address_at(pc), target);
 }
 
 #elif V8_TARGET_ARCH_RISCV32
-Address Assembler::target_address_at(Address pc) {
-  DEBUG_PRINTF("target_address_at: pc: %x\t", pc);
+Address Assembler::target_constant_address_at(Address pc) {
+  DEBUG_PRINTF("target_constant_address_at: pc: %x\t", pc);
   int32_t addr = target_constant32_at(pc);
-  DEBUG_PRINTF("addr: %x\n", addr);
+  DEBUG_PRINTF("\taddr: %x\n", addr);
   return static_cast<Address>(addr);
 }
 // On RISC-V, a 32-bit target address is stored in an 2-instruction sequence:

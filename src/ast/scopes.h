@@ -115,6 +115,10 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
 
   bool is_reparsed() const { return !scope_info_.is_null(); }
 
+  // Re-writes the {VariableLocation} of top-level 'let' bindings from CONTEXT
+  // to REPL_GLOBAL. Should only be called on REPL scripts.
+  void RewriteReplGlobalVariables();
+
   class Snapshot final {
    public:
     inline explicit Snapshot(Scope* scope);
@@ -341,10 +345,6 @@ class V8_EXPORT_PRIVATE Scope : public NON_EXPORTED_BASE(ZoneObject) {
   // Scopes created for desugaring are hidden. I.e. not visible to the debugger.
   bool is_hidden() const { return is_hidden_; }
   void set_is_hidden() { is_hidden_ = true; }
-
-  bool is_hidden_catch_scope() const {
-    return is_hidden() && scope_type() == CATCH_SCOPE;
-  }
 
   void ForceContextAllocationForParameters() {
     DCHECK(!already_resolved_);
@@ -1220,10 +1220,6 @@ class V8_EXPORT_PRIVATE DeclarationScope : public Scope {
     return needs_private_name_context_chain_recalc_;
   }
   void RecordNeedsPrivateNameContextChainRecalc();
-
-  // Re-writes the {VariableLocation} of top-level 'let' bindings from CONTEXT
-  // to REPL_GLOBAL. Should only be called on REPL scripts.
-  void RewriteReplGlobalVariables();
 
   void set_class_scope_has_private_brand(bool value) {
     class_scope_has_private_brand_ = value;

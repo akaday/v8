@@ -755,24 +755,6 @@ void RegExpMacroAssemblerIA32::PopRegExpBasePointer(Register stack_pointer_out,
   StoreRegExpStackPointerToMemory(stack_pointer_out, scratch);
 }
 
-void RegExpMacroAssemblerIA32::EncodePositionIndependentRegisterOutput(
-    Register scratch_and_out) {
-  // pi = memory_top - register_output_vector
-  ExternalReference ref =
-      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
-  __ mov(scratch_and_out, __ ExternalReferenceAsOperand(ref, scratch_and_out));
-  __ sub(scratch_and_out, Operand(ebp, kRegisterOutputOffset));
-}
-
-void RegExpMacroAssemblerIA32::DecodePositionIndependentRegisterOutput(
-    Register scratch_and_out) {
-  // register_output_vector = memory_top - pi
-  ExternalReference ref =
-      ExternalReference::address_of_regexp_stack_memory_top_address(isolate());
-  __ mov(scratch_and_out, __ ExternalReferenceAsOperand(ref, scratch_and_out));
-  __ sub(scratch_and_out, Operand(ebp, kRegisterOutputOffset));
-}
-
 Handle<HeapObject> RegExpMacroAssemblerIA32::GetCode(Handle<String> source,
                                                      RegExpFlags flags) {
   Label return_eax;
@@ -810,11 +792,6 @@ Handle<HeapObject> RegExpMacroAssemblerIA32::GetCode(Handle<String> source,
   static_assert(kRegExpStackBasePointerOffset ==
                 kBacktrackCountOffset - kSystemPointerSize);
   __ push(Immediate(0));  // The regexp stack base ptr.
-
-  // Change the output_offsets_vector to be position-independent since the
-  // stack may grow and thus change location.
-  EncodePositionIndependentRegisterOutput(ecx);
-  __ mov(Operand(ebp, kRegisterOutputOffset), ecx);
 
   // Initialize backtrack stack pointer. It must not be clobbered from here on.
   // Note the backtrack_stackpointer is *not* callee-saved.
@@ -930,7 +907,7 @@ Handle<HeapObject> RegExpMacroAssemblerIA32::GetCode(Handle<String> source,
     __ bind(&success_label_);
     if (num_saved_registers_ > 0) {
       // copy captures to output
-      DecodePositionIndependentRegisterOutput(ebx);
+      __ mov(ebx, Operand(ebp, kRegisterOutputOffset));
       __ mov(ecx, Operand(ebp, kInputEndOffset));
       __ mov(edx, Operand(ebp, kStartIndexOffset));
       __ sub(ecx, Operand(ebp, kInputStartOffset));
@@ -968,7 +945,7 @@ Handle<HeapObject> RegExpMacroAssemblerIA32::GetCode(Handle<String> source,
 
       __ mov(Operand(ebp, kNumOutputRegistersOffset), ecx);
       // Advance the location for output.
-      __ sub(Operand(ebp, kRegisterOutputOffset),
+      __ add(Operand(ebp, kRegisterOutputOffset),
              Immediate(num_saved_registers_ * kSystemPointerSize));
 
       // Restore the original regexp stack pointer value (effectively, pop the
@@ -1170,6 +1147,7 @@ void RegExpMacroAssemblerIA32::PushBacktrack(Label* label) {
 
 void RegExpMacroAssemblerIA32::PushCurrentPosition() {
   Push(edi);
+  CheckStackLimit();
 }
 
 
@@ -1177,7 +1155,11 @@ void RegExpMacroAssemblerIA32::PushRegister(int register_index,
                                             StackCheckFlag check_stack_limit) {
   __ mov(eax, register_location(register_index));
   Push(eax);
-  if (check_stack_limit) CheckStackLimit();
+  if (check_stack_limit) {
+    CheckStackLimit();
+  } else if (V8_UNLIKELY(v8_flags.slow_debug_code)) {
+    AssertAboveStackLimitMinusSlack();
+  }
 }
 
 
@@ -1404,6 +1386,18 @@ void RegExpMacroAssemblerIA32::CheckStackLimit() {
   __ bind(&no_stack_overflow);
 }
 
+void RegExpMacroAssemblerIA32::AssertAboveStackLimitMinusSlack() {
+  DCHECK(v8_flags.slow_debug_code);
+  Label no_stack_overflow;
+  ASM_CODE_COMMENT_STRING(masm_.get(), "AssertAboveStackLimitMinusSlack");
+  auto l = ExternalReference::address_of_regexp_stack_limit_address(isolate());
+  __ mov(eax, __ ExternalReferenceAsOperand(l, eax));
+  __ sub(eax, Immediate(RegExpStack::kStackLimitSlackSize));
+  __ cmp(backtrack_stackpointer(), eax);
+  __ j(above, &no_stack_overflow);
+  __ int3();
+  __ bind(&no_stack_overflow);
+}
 
 void RegExpMacroAssemblerIA32::LoadCurrentCharacterUnchecked(int cp_offset,
                                                              int characters) {

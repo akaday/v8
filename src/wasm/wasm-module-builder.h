@@ -319,6 +319,7 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
     // offset would also be mistyped.
     bool IsValidOffsetKind(WasmInitExpr::Operator kind) {
       return kind == WasmInitExpr::kI32Const ||
+             kind == WasmInitExpr::kI64Const ||
              kind == WasmInitExpr::kGlobalGet ||
              kind == WasmInitExpr::kRefNullConst;
     }
@@ -360,14 +361,14 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
   ModuleTypeIndex AddArrayType(ArrayType* type, bool is_final,
                                ModuleTypeIndex supertype = kNoSuperType);
   uint32_t AddTable(ValueType type, uint32_t min_size);
-  uint32_t AddTable(ValueType type, uint32_t min_size, uint32_t max_size);
   uint32_t AddTable(ValueType type, uint32_t min_size, uint32_t max_size,
-                    WasmInitExpr init);
-  uint32_t AddTable64(ValueType type, uint32_t min_size, uint32_t max_size);
-  uint32_t AddTable64(ValueType type, uint32_t min_size, uint32_t max_size,
-                      WasmInitExpr init);
+                    AddressType address_type = AddressType::kI32);
+  uint32_t AddTable(ValueType type, uint32_t min_size, uint32_t max_size,
+                    WasmInitExpr init,
+                    AddressType address_type = AddressType::kI32);
   uint32_t AddMemory(uint32_t min_pages);
   uint32_t AddMemory(uint32_t min_pages, uint32_t max_pages);
+  uint32_t AddMemory64(uint32_t min_pages);
   uint32_t AddMemory64(uint32_t min_pages, uint32_t max_pages);
   void MarkStartFunction(WasmFunctionBuilder* builder);
   void AddExport(base::Vector<const char> name, ImportExportKindCode kind,
@@ -387,16 +388,14 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
   void EndRecursiveTypeGroup() {
     // Make sure we are in a recursive group.
     DCHECK_NE(current_recursive_group_start_, -1);
-    // Make sure the current recursive group has at least one element.
-    DCHECK_GT(static_cast<int>(types_.size()), current_recursive_group_start_);
-    recursive_groups_.emplace(
+    recursive_groups_.emplace_back(
         current_recursive_group_start_,
         static_cast<uint32_t>(types_.size()) - current_recursive_group_start_);
     current_recursive_group_start_ = -1;
   }
 
   void AddRecursiveTypeGroup(uint32_t start, uint32_t size) {
-    recursive_groups_.emplace(start, size);
+    recursive_groups_.emplace_back(start, size);
   }
 
   // Writing methods.
@@ -465,6 +464,8 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
   int NumDataSegments() { return static_cast<int>(data_segments_.size()); }
 
   bool IsMemory64(uint32_t index) { return memories_[index].is_memory64(); }
+
+  bool IsTable64(uint32_t index) { return tables_[index].is_table64(); }
 
   const FunctionSig* GetTagType(int index) {
     return types_[tags_[index].index].function_sig;
@@ -546,8 +547,11 @@ class V8_EXPORT_PRIVATE WasmModuleBuilder : public ZoneObject {
   ZoneVector<ModuleTypeIndex> tags_;
   ZoneUnorderedMap<FunctionSig, ModuleTypeIndex> signature_map_;
   int current_recursive_group_start_;
-  // first index -> size
-  ZoneUnorderedMap<uint32_t, uint32_t> recursive_groups_;
+  struct RecGroup {
+    uint32_t start_index;
+    uint32_t size;
+  };
+  ZoneVector<RecGroup> recursive_groups_;
   int start_function_index_;
 #if DEBUG
   // Once AddExportedImport is called, no more imports can be added.

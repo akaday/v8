@@ -70,14 +70,15 @@ void PropertyCell::Transition(PropertyDetails new_details,
 
 TQ_OBJECT_CONSTRUCTORS_IMPL(ContextSidePropertyCell)
 
-ACCESSORS(ContextSidePropertyCell, context_side_property_raw, Tagged<Smi>,
-          kPropertyDetailsRawOffset)
+RELEASE_ACQUIRE_ACCESSORS(ContextSidePropertyCell, context_side_property_raw,
+                          Tagged<Smi>, kPropertyDetailsRawOffset)
 
 ACCESSORS(ContextSidePropertyCell, dependent_code, Tagged<DependentCode>,
           kDependentCodeOffset)
 
-bool ContextSidePropertyCell::IsNotConst(Tagged<Object> object) {
-  return object == ContextSidePropertyCell::Other();
+ContextSidePropertyCell::Property
+ContextSidePropertyCell::context_side_property() const {
+  return FromSmi(context_side_property_raw(kAcquireLoad));
 }
 
 }  // namespace internal

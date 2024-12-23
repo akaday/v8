@@ -533,41 +533,24 @@ uint32_t WasmModuleBuilder::AddTable(ValueType type, uint32_t min_size) {
 }
 
 uint32_t WasmModuleBuilder::AddTable(ValueType type, uint32_t min_size,
-                                     uint32_t max_size) {
+                                     uint32_t max_size,
+                                     AddressType address_type) {
   tables_.push_back({.type = type,
                      .min_size = min_size,
                      .max_size = max_size,
-                     .has_maximum = true});
+                     .has_maximum = true,
+                     .address_type = address_type});
   return static_cast<uint32_t>(tables_.size() - 1);
 }
 
 uint32_t WasmModuleBuilder::AddTable(ValueType type, uint32_t min_size,
-                                     uint32_t max_size, WasmInitExpr init) {
+                                     uint32_t max_size, WasmInitExpr init,
+                                     AddressType address_type) {
   tables_.push_back({.type = type,
                      .min_size = min_size,
                      .max_size = max_size,
                      .has_maximum = true,
-                     .init = {init}});
-  return static_cast<uint32_t>(tables_.size() - 1);
-}
-
-uint32_t WasmModuleBuilder::AddTable64(ValueType type, uint32_t min_size,
-                                       uint32_t max_size) {
-  tables_.push_back({.type = type,
-                     .min_size = min_size,
-                     .max_size = max_size,
-                     .has_maximum = true,
-                     .address_type = AddressType::kI64});
-  return static_cast<uint32_t>(tables_.size() - 1);
-}
-
-uint32_t WasmModuleBuilder::AddTable64(ValueType type, uint32_t min_size,
-                                       uint32_t max_size, WasmInitExpr init) {
-  tables_.push_back({.type = type,
-                     .min_size = min_size,
-                     .max_size = max_size,
-                     .has_maximum = true,
-                     .address_type = AddressType::kI64,
+                     .address_type = address_type,
                      .init = {init}});
   return static_cast<uint32_t>(tables_.size() - 1);
 }
@@ -580,6 +563,12 @@ uint32_t WasmModuleBuilder::AddMemory(uint32_t min_pages) {
 uint32_t WasmModuleBuilder::AddMemory(uint32_t min_pages, uint32_t max_pages) {
   memories_.push_back(
       {.min_pages = min_pages, .max_pages = max_pages, .has_max_pages = true});
+  return static_cast<uint32_t>(memories_.size() - 1);
+}
+
+uint32_t WasmModuleBuilder::AddMemory64(uint32_t min_pages) {
+  memories_.push_back(
+      {.min_pages = min_pages, .address_type = AddressType::kI64});
   return static_cast<uint32_t>(memories_.size() - 1);
 }
 
@@ -673,20 +662,26 @@ void WasmModuleBuilder::WriteTo(ZoneBuffer* buffer) const {
   // == Emit types =============================================================
   if (!types_.empty()) {
     size_t start = EmitSection(kTypeSectionCode, buffer);
-    size_t type_count = types_.size();
-    for (auto pair : recursive_groups_) {
-      // Every rec. group counts as one type entry.
-      type_count -= pair.second - 1;
+    // Every recursion group occupies one type entry.
+    size_t type_count = types_.size() + recursive_groups_.size();
+    // Types inside recursion groups occupy no additional type entry.
+    for (auto [first_index, size] : recursive_groups_) {
+      type_count -= size;
     }
 
     buffer->write_size(type_count);
 
-    for (uint32_t i = 0; i < types_.size(); i++) {
-      auto recursive_group = recursive_groups_.find(i);
+    const RecGroup* next_rec_group =
+        recursive_groups_.empty() ? nullptr : recursive_groups_.data();
 
-      if (recursive_group != recursive_groups_.end()) {
+    for (uint32_t i = 0; i < types_.size(); i++) {
+      // Note: while loop, because recgroups can be empty.
+      while (next_rec_group && i == next_rec_group->start_index) {
         buffer->write_u8(kWasmRecursiveTypeGroupCode);
-        buffer->write_u32v(recursive_group->second);
+        buffer->write_u32v(next_rec_group->size);
+        next_rec_group = next_rec_group == &recursive_groups_.back()
+                             ? nullptr
+                             : next_rec_group + 1;
       }
 
       const TypeDefinition& type = types_[i];
@@ -733,6 +728,17 @@ void WasmModuleBuilder::WriteTo(ZoneBuffer* buffer) const {
         }
       }
     }
+
+    // Handle empty recursion groups defined after all types.
+    while (next_rec_group) {
+      DCHECK_EQ(types_.size(), next_rec_group->start_index);
+      DCHECK_EQ(0, next_rec_group->size);
+      buffer->write_u8(kWasmRecursiveTypeGroupCode);
+      buffer->write_u32v(0);
+      if (next_rec_group == &recursive_groups_.back()) break;
+      ++next_rec_group;
+    }
+
     FixupSection(buffer, start);
   }
 

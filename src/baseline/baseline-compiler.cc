@@ -482,9 +482,8 @@ void BaselineCompiler::VisitSingleBytecode() {
 #endif
   int offset = iterator().current_offset();
   if (IsJumpTarget(offset)) __ Bind(&labels_[offset]);
-  // Mark position as valid jump target unconditionnaly when the deoptimizer can
-  // jump to baseline code. This is required when CFI is enabled.
-  if (v8_flags.deopt_to_baseline || IsIndirectJumpTarget(offset)) {
+  // This is required when CFI is enabled.
+  if (IsIndirectJumpTarget(offset)) {
     __ JumpTarget();
   }
 
@@ -509,7 +508,7 @@ void BaselineCompiler::VisitSingleBytecode() {
     // isn't registered as writing to it. We can't do this for jumps or switches
     // though, since the control flow would not match the control flow of this
     // scope.
-    if (v8_flags.debug_code &&
+    if (v8_flags.slow_debug_code &&
         !interpreter::Bytecodes::WritesOrClobbersAccumulator(bytecode) &&
         !interpreter::Bytecodes::IsJump(bytecode) &&
         !interpreter::Bytecodes::IsSwitch(bytecode)) {
@@ -533,7 +532,7 @@ void BaselineCompiler::VisitSingleBytecode() {
 }
 
 void BaselineCompiler::VerifyFrame() {
-  if (v8_flags.debug_code) {
+  if (v8_flags.slow_debug_code) {
     ASM_CODE_COMMENT(&masm_);
     __ RecordComment(" -- Verify frame size");
     VerifyFrameSize();
@@ -759,6 +758,25 @@ void BaselineCompiler::VisitLdaContextSlot() {
   __ LdaContextSlot(context, index, depth);
 }
 
+void BaselineCompiler::VisitLdaScriptContextSlot() {
+  BaselineAssembler::ScratchRegisterScope scratch_scope(&basm_);
+  Register context = scratch_scope.AcquireScratch();
+  Label done;
+  LoadRegister(context, 0);
+  uint32_t index = Index(1);
+  uint32_t depth = Uint(2);
+  __ LdaContextSlot(context, index, depth,
+                    BaselineAssembler::CompressionMode::kForceDecompression);
+  __ JumpIfSmi(kInterpreterAccumulatorRegister, &done);
+  __ JumpIfObjectTypeFast(kNotEqual, kInterpreterAccumulatorRegister,
+                          HEAP_NUMBER_TYPE, &done, Label::kNear);
+  CallBuiltin<Builtin::kAllocateIfMutableHeapNumberScriptContextSlot>(
+      kInterpreterAccumulatorRegister,  // heap number
+      context,                          // context
+      Smi::FromInt(index));             // slot
+  __ Bind(&done);
+}
+
 void BaselineCompiler::VisitLdaImmutableContextSlot() { VisitLdaContextSlot(); }
 
 void BaselineCompiler::VisitLdaCurrentContextSlot() {
@@ -767,6 +785,24 @@ void BaselineCompiler::VisitLdaCurrentContextSlot() {
   __ LoadContext(context);
   __ LoadTaggedField(kInterpreterAccumulatorRegister, context,
                      Context::OffsetOfElementAt(Index(0)));
+}
+
+void BaselineCompiler::VisitLdaCurrentScriptContextSlot() {
+  BaselineAssembler::ScratchRegisterScope scratch_scope(&basm_);
+  Register context = scratch_scope.AcquireScratch();
+  Label done;
+  uint32_t index = Index(0);
+  __ LoadContext(context);
+  __ LoadTaggedField(kInterpreterAccumulatorRegister, context,
+                     Context::OffsetOfElementAt(index));
+  __ JumpIfSmi(kInterpreterAccumulatorRegister, &done);
+  __ JumpIfObjectTypeFast(kNotEqual, kInterpreterAccumulatorRegister,
+                          HEAP_NUMBER_TYPE, &done, Label::kNear);
+  CallBuiltin<Builtin::kAllocateIfMutableHeapNumberScriptContextSlot>(
+      kInterpreterAccumulatorRegister,  // heap number
+      context,                          // context
+      Smi::FromInt(index));             // slot
+  __ Bind(&done);
 }
 
 void BaselineCompiler::VisitLdaImmutableCurrentContextSlot() {
@@ -827,6 +863,11 @@ void BaselineCompiler::VisitLdaLookupContextSlot() {
       Constant<Name>(0), UintAsTagged(2), IndexAsTagged(1));
 }
 
+void BaselineCompiler::VisitLdaLookupScriptContextSlot() {
+  CallBuiltin<Builtin::kLookupScriptContextBaseline>(
+      Constant<Name>(0), UintAsTagged(2), IndexAsTagged(1));
+}
+
 void BaselineCompiler::VisitLdaLookupGlobalSlot() {
   CallBuiltin<Builtin::kLookupGlobalICBaseline>(
       Constant<Name>(0), UintAsTagged(2), IndexAsTagged(1));
@@ -838,6 +879,11 @@ void BaselineCompiler::VisitLdaLookupSlotInsideTypeof() {
 
 void BaselineCompiler::VisitLdaLookupContextSlotInsideTypeof() {
   CallBuiltin<Builtin::kLookupContextInsideTypeofBaseline>(
+      Constant<Name>(0), UintAsTagged(2), IndexAsTagged(1));
+}
+
+void BaselineCompiler::VisitLdaLookupScriptContextSlotInsideTypeof() {
+  CallBuiltin<Builtin::kLookupScriptContextInsideTypeofBaseline>(
       Constant<Name>(0), UintAsTagged(2), IndexAsTagged(1));
 }
 
@@ -2029,8 +2075,11 @@ void BaselineCompiler::VisitJumpLoop() {
     UpdateInterruptBudgetAndJumpToLabel(-weight, nullptr, &do_osr,
                                         kDisableStackCheck);
     __ Bind(&do_osr);
+    Register expected_param_count = D::ExpectedParameterCountRegister();
+    __ Move(expected_param_count, Smi::FromInt(bytecode_->parameter_count()));
     __ Pop(maybe_target_code);
-    CallBuiltin<Builtin::kBaselineOnStackReplacement>(maybe_target_code);
+    CallBuiltin<Builtin::kBaselineOnStackReplacement>(maybe_target_code,
+                                                      expected_param_count);
     __ AddToInterruptBudgetAndJumpIfNotExceeded(weight, nullptr);
     __ Jump(&osr_not_armed, Label::kNear);
 

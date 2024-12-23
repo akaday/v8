@@ -15,9 +15,7 @@
 #include "src/wasm/value-type.h"
 #include "src/zone/zone.h"
 
-namespace v8 {
-namespace internal {
-namespace wasm {
+namespace v8::internal::wasm {
 
 class StructTypeBase : public ZoneObject {
  public:
@@ -264,15 +262,6 @@ inline std::ostream& operator<<(std::ostream& out, StructTypeBase type) {
   return out;
 }
 
-// Support base::hash<StructTypeBase>.
-inline size_t hash_value(const StructTypeBase& type) {
-  return base::Hasher{}
-      .Add(type.field_count())
-      .AddRange(type.fields())
-      .AddRange(type.mutabilities())
-      .hash();
-}
-
 class ArrayTypeBase : public ZoneObject {
  public:
   constexpr explicit ArrayTypeBase(bool mutability) : mutability_(mutability) {}
@@ -319,16 +308,6 @@ class CanonicalArrayType : public ArrayTypeBase {
   CanonicalValueType rep_;
 };
 
-// Support base::hash<...> for ArrayType and CanonicalArrayType.
-inline size_t hash_value(const ArrayType& type) {
-  return base::Hasher::Combine(type.element_type(), type.mutability());
-}
-inline size_t hash_value(const CanonicalArrayType& type) {
-  return base::Hasher::Combine(type.element_type(), type.mutability());
-}
-
-}  // namespace wasm
-}  // namespace internal
-}  // namespace v8
+}  // namespace v8::internal::wasm
 
 #endif  // V8_WASM_STRUCT_TYPES_H_

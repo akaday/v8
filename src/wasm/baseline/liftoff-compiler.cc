@@ -31,7 +31,6 @@
 #include "src/wasm/function-compiler.h"
 #include "src/wasm/memory-tracing.h"
 #include "src/wasm/object-access.h"
-#include "src/wasm/signature-hashing.h"
 #include "src/wasm/simd-shuffle.h"
 #include "src/wasm/wasm-debug.h"
 #include "src/wasm/wasm-engine.h"
@@ -282,8 +281,7 @@ class DebugSideTableBuilder {
 
  private:
   static std::vector<Value> GetChangedStackValues(
-      std::vector<Value>& last_values,
-      base::Vector<DebugSideTable::Entry::Value> values) {
+      std::vector<Value>& last_values, base::Vector<Value> values) {
     std::vector<Value> changed_values;
     int old_stack_size = static_cast<int>(last_values.size());
     last_values.resize(values.size());
@@ -620,7 +618,9 @@ class LiftoffCompiler {
         dead_breakpoint_(options.dead_breakpoint),
         handlers_(zone),
         max_steps_(options.max_steps),
-        nondeterminism_(options.nondeterminism) {
+        nondeterminism_(options.nondeterminism),
+        deopt_info_bytecode_offset_(options.deopt_info_bytecode_offset),
+        deopt_location_kind_(options.deopt_location_kind) {
     // We often see huge numbers of traps per function, so pre-reserve some
     // space in that vector. 128 entries is enough for ~94% of functions on
     // modern modules, as of 2022-06-03.
@@ -655,7 +655,7 @@ class LiftoffCompiler {
   }
 
   base::OwnedVector<uint8_t> GetProtectedInstructionsData() const {
-    return base::OwnedVector<uint8_t>::Of(base::Vector<const uint8_t>::cast(
+    return base::OwnedCopyOf(base::Vector<const uint8_t>::cast(
         base::VectorOf(protected_instructions_)));
   }
 
@@ -1226,8 +1226,7 @@ class LiftoffCompiler {
       base::OwnedVector<uint32_t>& call_targets =
           function_feedback.call_targets;
       if (call_targets.empty()) {
-        call_targets =
-            base::OwnedVector<uint32_t>::Of(encountered_call_instructions_);
+        call_targets = base::OwnedCopyOf(encountered_call_instructions_);
       } else {
         DCHECK_EQ(call_targets.as_vector(),
                   base::VectorOf(encountered_call_instructions_));
@@ -1996,14 +1995,16 @@ class LiftoffCompiler {
   }
 
   template <typename EmitFn, typename... Args>
-  typename std::enable_if<!std::is_member_function_pointer<EmitFn>::value>::type
-  CallEmitFn(EmitFn fn, Args... args) {
+  void CallEmitFn(EmitFn fn, Args... args)
+    requires(!std::is_member_function_pointer_v<EmitFn>)
+  {
     fn(args...);
   }
 
   template <typename EmitFn, typename... Args>
-  typename std::enable_if<std::is_member_function_pointer<EmitFn>::value>::type
-  CallEmitFn(EmitFn fn, Args... args) {
+  void CallEmitFn(EmitFn fn, Args... args)
+    requires std::is_member_function_pointer_v<EmitFn>
+  {
     (asm_.*fn)(ConvertAssemblerArg(args)...);
   }
 
@@ -2019,8 +2020,8 @@ class LiftoffCompiler {
   // Convert {LiftoffRegister} to {AssemblerRegisterConverter}, other types stay
   // unchanged.
   template <typename T>
-  typename std::conditional<std::is_same<LiftoffRegister, T>::value,
-                            AssemblerRegisterConverter, T>::type
+  std::conditional_t<std::is_same_v<LiftoffRegister, T>,
+                     AssemblerRegisterConverter, T>
   ConvertAssemblerArg(T t) {
     return {t};
   }
@@ -2354,6 +2355,28 @@ class LiftoffCompiler {
       }
     }
     __ PushRegister(result_kind, dst);
+  }
+
+  // We do not use EmitBinOp for Swizzle because in the no-avx case, we have the
+  // additional constraint that dst does not alias the mask.
+  void EmitI8x16Swizzle(bool relaxed) {
+    static constexpr RegClass result_rc = reg_class_for(kS128);
+    LiftoffRegister mask = __ PopToRegister();
+    LiftoffRegister src = __ PopToRegister(LiftoffRegList{mask});
+#if defined(V8_TARGET_ARCH_IA32) || defined(V8_TARGET_ARCH_X64)
+    LiftoffRegister dst =
+        CpuFeatures::IsSupported(AVX)
+            ? __ GetUnusedRegister(result_rc, {src, mask}, {})
+            : __ GetUnusedRegister(result_rc, {src}, LiftoffRegList{mask});
+#else
+    LiftoffRegister dst = __ GetUnusedRegister(result_rc, {src, mask}, {});
+#endif
+    if (relaxed) {
+      __ emit_i8x16_relaxed_swizzle(dst, src, mask);
+    } else {
+      __ emit_i8x16_swizzle(dst, src, mask);
+    }
+    __ PushRegister(kS128, dst);
   }
 
   void EmitDivOrRem64CCall(LiftoffRegister dst, LiftoffRegister lhs,
@@ -2812,6 +2835,16 @@ class LiftoffCompiler {
 
   void ReturnImpl(FullDecoder* decoder) {
     if (V8_UNLIKELY(v8_flags.trace_wasm)) TraceFunctionExit(decoder);
+    // A function returning an uninhabitable type can't ever actually reach
+    // a {ret} instruction (it can only return by throwing or trapping). So
+    // if we do get here, there must have been a bug. Crash to flush it out.
+    base::Vector<const ValueType> returns = decoder->sig_->returns();
+    if (V8_UNLIKELY(std::any_of(
+            returns.begin(), returns.end(),
+            [](const ValueType type) { return type.is_uninhabited(); }))) {
+      __ Abort(AbortReason::kUninhabitableType);
+      return;
+    }
     if (dynamic_tiering()) {
       TierupCheck(decoder, decoder->position(),
                   __ pc_offset() + kTierUpCostForFunctionEntry);
@@ -3583,8 +3616,12 @@ class LiftoffCompiler {
                                uintptr_t* offset) {
     if (!index_slot.is_const()) return false;
 
-    // Potentially zero extend index (which is a 32-bit constant).
-    const uintptr_t index = static_cast<uint32_t>(index_slot.i32_const());
+    // memory64: Sign-extend to restore the original index value.
+    // memory32: Zero-extend the 32 bit value.
+    const uintptr_t index =
+        memory->is_memory64()
+            ? static_cast<uintptr_t>(intptr_t{index_slot.i32_const()})
+            : uintptr_t{static_cast<uint32_t>(index_slot.i32_const())};
     const uintptr_t effective_offset = index + *offset;
 
     if (effective_offset < index  // overflow
@@ -4001,6 +4038,26 @@ class LiftoffCompiler {
 
     __ bind(&done);
 
+    if (V8_UNLIKELY(nondeterminism_)) {
+      // Handle every return value of `-1` as nondeterministic. This will also
+      // catch totally deterministic grows above the declared maximum, but there
+      // is no easy way to distinguish those from nondeterministic failures
+      // here.
+      FreezeCacheState frozen_for_conditional_jump{asm_};
+      Label continuation;
+      __ emit_i32_cond_jumpi(kNotEqual, &continuation, result.gp(), -1,
+                             frozen_for_conditional_jump);
+      // Just reuse the result register for the "nondeterminism_addr"; we will
+      // reset it to -1 afterwards.
+      __ LoadConstant(
+          result,
+          WasmValue::ForUintPtr(reinterpret_cast<uintptr_t>(nondeterminism_)));
+      __ emit_store_nonzero(result.gp());
+      __ LoadConstant(result, WasmValue{int32_t{-1}});
+
+      __ bind(&continuation);
+    }
+
     if (imm.memory->is_memory64()) {
       LiftoffRegister result64 = result;
       if (kNeedI64RegPair) result64 = __ GetUnusedRegister(kGpRegPair, pinned);
@@ -4060,8 +4117,9 @@ class LiftoffCompiler {
       bool exception_on_stack =
           control->is_try_catch() || control->is_try_catchall();
       for (; index < end_index; ++index) {
-        auto& slot = stack_state[index];
-        auto& value = values[index];
+        const LiftoffVarState& slot = stack_state[index];
+        DebugSideTable::Entry::Value& value = values[index];
+        value.module = decoder->module_;
         value.index = index;
         if (exception_on_stack) {
           value.type = ValueType::Ref(HeapType::kAny);
@@ -4393,10 +4451,9 @@ class LiftoffCompiler {
     CHECK(CpuFeatures::SupportsWasmSimd128());
     switch (opcode) {
       case wasm::kExprI8x16Swizzle:
-        return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i8x16_swizzle);
+        return EmitI8x16Swizzle(false);
       case wasm::kExprI8x16RelaxedSwizzle:
-        return EmitBinOp<kS128, kS128>(
-            &LiftoffAssembler::emit_i8x16_relaxed_swizzle);
+        return EmitI8x16Swizzle(true);
       case wasm::kExprI8x16Popcnt:
         return EmitUnOp<kS128, kS128>(&LiftoffAssembler::emit_i8x16_popcnt);
       case wasm::kExprI8x16Splat:
@@ -8377,7 +8434,7 @@ class LiftoffCompiler {
             ObjectAccess::ToTagged(WasmDispatchTable::OffsetOf(imm.index) +
                                    WasmDispatchTable::kImplicitArgBias));
 
-        __ LoadFullPointer(
+        __ LoadCodePointer(
             target, dispatch_table,
             ObjectAccess::ToTagged(WasmDispatchTable::OffsetOf(imm.index) +
                                    WasmDispatchTable::kTargetBias));
@@ -8389,7 +8446,7 @@ class LiftoffCompiler {
             static_cast<int>(call_descriptor->ParameterSlotCount()),
             static_cast<int>(
                 call_descriptor->GetStackParameterDelta(descriptor_)));
-        __ TailCallIndirect(target);
+        __ TailCallIndirect(call_descriptor, target);
       } else {
         source_position_table_builder_.AddPosition(
             __ pc_offset(), SourcePosition(decoder->position()), true);
@@ -8435,9 +8492,9 @@ class LiftoffCompiler {
     }
     const WasmTable* table = imm.table_imm.table;
 
-    if (v8_flags.wasm_deopt &&
-        env_->deopt_info_bytecode_offset == decoder->pc_offset() &&
-        env_->deopt_location_kind == LocationKindForDeopt::kEagerDeopt) {
+    if (deopt_info_bytecode_offset_ == decoder->pc_offset() &&
+        deopt_location_kind_ == LocationKindForDeopt::kEagerDeopt) {
+      CHECK(v8_flags.wasm_deopt);
       EmitDeoptPoint(decoder);
     }
 
@@ -8450,10 +8507,11 @@ class LiftoffCompiler {
             ? no_reg
             : pinned.set(__ LoadToRegister(index_slot, pinned).gp());
 
+    static_assert(kV8MaxWasmTableSize <= kMaxUInt32);
     const uint32_t max_table_size =
-        table->has_maximum_size
-            ? std::min(table->maximum_size, uint32_t{kV8MaxWasmTableSize})
-            : uint32_t{kV8MaxWasmTableSize};
+        table->has_maximum_size ? static_cast<uint32_t>(std::min<uint64_t>(
+                                      table->maximum_size, kV8MaxWasmTableSize))
+                                : uint32_t{kV8MaxWasmTableSize};
     const bool statically_oob =
         is_static_index &&
         static_cast<uint32_t>(index_slot.i32_const()) >= max_table_size;
@@ -8693,9 +8751,9 @@ class LiftoffCompiler {
         __ LoadProtectedPointer(
             implicit_arg, dispatch_table_base.gp_reg(),
             dispatch_table_offset + WasmDispatchTable::kImplicitArgBias);
-        __ Load(LiftoffRegister(target), dispatch_table_base.gp_reg(), no_reg,
-                dispatch_table_offset + WasmDispatchTable::kTargetBias,
-                LoadType::ForValueKind(kIntPtrKind));
+        __ LoadCodePointer(
+            target, dispatch_table_base.gp_reg(),
+            dispatch_table_offset + WasmDispatchTable::kTargetBias);
       }
 
       if (v8_flags.wasm_inlining_call_indirect) {
@@ -8748,7 +8806,8 @@ class LiftoffCompiler {
         implicit_arg = kReturnRegister1;
       }
 
-      auto call_descriptor = compiler::GetWasmCallDescriptor(zone_, imm.sig);
+      auto call_descriptor = compiler::GetWasmCallDescriptor(
+          zone_, imm.sig, compiler::WasmCallKind::kWasmIndirectFunction);
       call_descriptor = GetLoweredCallDescriptor(zone_, call_descriptor);
 
       __ PrepareCall(&sig, call_descriptor, &target, implicit_arg);
@@ -8757,7 +8816,7 @@ class LiftoffCompiler {
             static_cast<int>(call_descriptor->ParameterSlotCount()),
             static_cast<int>(
                 call_descriptor->GetStackParameterDelta(descriptor_)));
-        __ TailCallIndirect(target);
+        __ TailCallIndirect(call_descriptor, target);
       } else {
         source_position_table_builder_.AddPosition(
             __ pc_offset(), SourcePosition(decoder->position()), true);
@@ -8767,12 +8826,17 @@ class LiftoffCompiler {
     }
   }
 
-  void StoreFrameDescriptionForDeopt(FullDecoder* decoder) {
+  void StoreFrameDescriptionForDeopt(
+      FullDecoder* decoder, uint32_t adapt_shadow_stack_pc_offset = 0) {
     DCHECK(v8_flags.wasm_deopt);
     DCHECK(!frame_description_);
+
     frame_description_ = std::make_unique<LiftoffFrameDescriptionForDeopt>(
         LiftoffFrameDescriptionForDeopt{
             decoder->pc_offset(), static_cast<uint32_t>(__ pc_offset()),
+#ifdef V8_ENABLE_CET_SHADOW_STACK
+            adapt_shadow_stack_pc_offset,
+#endif  // V8_ENABLE_CET_SHADOW_STACK
             std::vector<LiftoffVarState>(__ cache_state()->stack_state.begin(),
                                          __ cache_state()->stack_state.end()),
             __ cache_state()->cached_instance_data});
@@ -8803,7 +8867,13 @@ class LiftoffCompiler {
     Label callref;
     __ emit_jump(&callref);
     __ bind(&deopt_point);
-    StoreFrameDescriptionForDeopt(decoder);
+    uint32_t adapt_shadow_stack_pc_offset = __ pc_offset();
+#ifdef V8_ENABLE_CET_SHADOW_STACK
+    if (v8_flags.cet_compatible) {
+      __ CallBuiltin(Builtin::kAdaptShadowStackForDeopt);
+    }
+#endif  // V8_ENABLE_CET_SHADOW_STACK
+    StoreFrameDescriptionForDeopt(decoder, adapt_shadow_stack_pc_offset);
     CallBuiltin(Builtin::kWasmLiftoffDeoptFinish, MakeSig(), {},
                 kNoSourcePosition);
     __ MergeStackWith(initial_state, 0, LiftoffAssembler::kForwardJump);
@@ -8817,17 +8887,17 @@ class LiftoffCompiler {
     for (ValueKind ret : sig.returns()) {
       if (!CheckSupportedType(decoder, ret, "return")) return;
     }
-    compiler::CallDescriptor* call_descriptor =
-        compiler::GetWasmCallDescriptor(zone_, type_sig);
+    compiler::CallDescriptor* call_descriptor = compiler::GetWasmCallDescriptor(
+        zone_, type_sig, compiler::WasmCallKind::kWasmIndirectFunction);
     call_descriptor = GetLoweredCallDescriptor(zone_, call_descriptor);
 
     Register target_reg = no_reg;
     Register implicit_arg_reg = no_reg;
 
     if (v8_flags.wasm_inlining) {
-      if (v8_flags.wasm_deopt &&
-          env_->deopt_info_bytecode_offset == decoder->pc_offset() &&
-          env_->deopt_location_kind == LocationKindForDeopt::kEagerDeopt) {
+      if (deopt_info_bytecode_offset_ == decoder->pc_offset() &&
+          deopt_location_kind_ == LocationKindForDeopt::kEagerDeopt) {
+        CHECK(v8_flags.wasm_deopt);
         EmitDeoptPoint(decoder);
       }
       LiftoffRegList pinned;
@@ -8835,15 +8905,6 @@ class LiftoffCompiler {
       LiftoffRegister vector = pinned.set(__ GetUnusedRegister(kGpReg, pinned));
       MaybeEmitNullCheck(decoder, func_ref.gp(), pinned, func_ref_type);
       VarState func_ref_var(kRef, func_ref, 0);
-
-#if V8_ENABLE_SANDBOX
-      LiftoffRegister sig_hash_reg =
-          pinned.set(__ GetUnusedRegister(kGpReg, pinned));
-      __ LoadConstant(sig_hash_reg, WasmValue{SignatureHasher::Hash(type_sig)});
-      VarState sig_hash_var{kIntPtrKind, sig_hash_reg, 0};
-#else
-      VarState sig_hash_var{kIntPtrKind, 0, 0};  // Unused by callee.
-#endif
 
       __ Fill(vector, WasmLiftoffFrameConstants::kFeedbackVectorOffset, kRef);
       VarState vector_var{kRef, vector, 0};
@@ -8859,13 +8920,11 @@ class LiftoffCompiler {
       VarState index_var(kI32, vector_slot, 0);
 
       // CallRefIC(vector: FixedArray, vectorIndex: int32,
-      //           signatureHash: uintptr,
       //           funcref: WasmFuncRef) -> <target, implicit_arg>
-      CallBuiltin(Builtin::kCallRefIC,
-                  MakeSig::Returns(kIntPtrKind, kIntPtrKind)
-                      .Params(kRef, kI32, kIntPtrKind, kRef),
-                  {vector_var, index_var, sig_hash_var, func_ref_var},
-                  decoder->position());
+      CallBuiltin(
+          Builtin::kCallRefIC,
+          MakeSig::Returns(kIntPtrKind, kIntPtrKind).Params(kRef, kI32, kRef),
+          {vector_var, index_var, func_ref_var}, decoder->position());
       target_reg = LiftoffRegister(kReturnRegister0).gp();
       implicit_arg_reg = kReturnRegister1;
     } else {  // v8_flags.wasm_inlining
@@ -8897,7 +8956,7 @@ class LiftoffCompiler {
 
       __ LoadFullPointer(target_reg, internal_function,
                          wasm::ObjectAccess::ToTagged(
-                             WasmInternalFunction::kCallTargetOffset));
+                             WasmInternalFunction::kRawCallTargetOffset));
 
       // Now the call target is in {target_reg} and the first parameter
       // (WasmTrustedInstanceData or WasmImportData) is in
@@ -8910,7 +8969,7 @@ class LiftoffCompiler {
           static_cast<int>(call_descriptor->ParameterSlotCount()),
           static_cast<int>(
               call_descriptor->GetStackParameterDelta(descriptor_)));
-      __ TailCallIndirect(target_reg);
+      __ TailCallIndirect(call_descriptor, target_reg);
     } else {
       source_position_table_builder_.AddPosition(
           __ pc_offset(), SourcePosition(decoder->position()), true);
@@ -9070,14 +9129,29 @@ class LiftoffCompiler {
 
   void FinishCall(FullDecoder* decoder, ValueKindSig* sig,
                   compiler::CallDescriptor* call_descriptor) {
-    if (v8_flags.wasm_deopt &&
-        env_->deopt_info_bytecode_offset == decoder->pc_offset() &&
-        env_->deopt_location_kind == LocationKindForDeopt::kInlinedCall) {
-      StoreFrameDescriptionForDeopt(decoder);
-    }
-
     DefineSafepoint();
     RegisterDebugSideTableEntry(decoder, DebugSideTableBuilder::kDidSpill);
+
+    if (deopt_info_bytecode_offset_ == decoder->pc_offset() &&
+        deopt_location_kind_ == LocationKindForDeopt::kInlinedCall) {
+      CHECK(v8_flags.wasm_deopt);
+      uint32_t adapt_shadow_stack_pc_offset = 0;
+#ifdef V8_ENABLE_CET_SHADOW_STACK
+      if (v8_flags.cet_compatible) {
+        // AdaptShadowStackForDeopt is be called to build shadow stack after
+        // deoptimization. Deoptimizer will directly jump to
+        // `call AdaptShadowStackForDeopt`. But, in any other case, it should be
+        // ignored.
+        Label deopt_point;
+        __ emit_jump(&deopt_point);
+        adapt_shadow_stack_pc_offset = __ pc_offset();
+        __ CallBuiltin(Builtin::kAdaptShadowStackForDeopt);
+        __ bind(&deopt_point);
+      }
+#endif  // V8_ENABLE_CET_SHADOW_STACK
+      StoreFrameDescriptionForDeopt(decoder, adapt_shadow_stack_pc_offset);
+    }
+
     int pc_offset = __ pc_offset();
     MaybeOSR();
     EmitLandingPad(decoder, pc_offset);
@@ -9090,7 +9164,7 @@ class LiftoffCompiler {
     __ LoadConstant(
         nondeterminism_addr,
         WasmValue::ForUintPtr(reinterpret_cast<uintptr_t>(nondeterminism_)));
-    __ emit_set_if_nan(nondeterminism_addr.gp(), src.fp(), kind);
+    __ emit_store_nonzero_if_nan(nondeterminism_addr.gp(), src.fp(), kind);
   }
 
   void CheckS128Nan(LiftoffRegister dst, LiftoffRegList pinned,
@@ -9103,8 +9177,8 @@ class LiftoffCompiler {
     __ LoadConstant(
         nondeterminism_addr,
         WasmValue::ForUintPtr(reinterpret_cast<uintptr_t>(nondeterminism_)));
-    __ emit_s128_set_if_nan(nondeterminism_addr.gp(), dst, tmp_gp.gp(),
-                            tmp_s128, lane_kind);
+    __ emit_s128_store_nonzero_if_nan(nondeterminism_addr.gp(), dst,
+                                      tmp_gp.gp(), tmp_s128, lane_kind);
   }
 
   void ArrayFillImpl(FullDecoder* decoder, LiftoffRegList pinned,
@@ -9292,8 +9366,12 @@ class LiftoffCompiler {
 
   // Pointer to information passed from the fuzzer. The pointers will be
   // embedded in generated code, which will update the values at runtime.
-  int32_t* max_steps_;
-  int32_t* nondeterminism_;
+  int32_t* const max_steps_;
+  int32_t* const nondeterminism_;
+
+  // Information for deopt'ed code.
+  const uint32_t deopt_info_bytecode_offset_;
+  const LocationKindForDeopt deopt_location_kind_;
 
   std::unique_ptr<LiftoffFrameDescriptionForDeopt> frame_description_;
 
@@ -9389,6 +9467,7 @@ WasmCompilationResult ExecuteLiftoffCompilation(
   result.for_debugging = compiler_options.for_debugging;
   result.frame_has_feedback_slot = v8_flags.wasm_inlining;
   result.liftoff_frame_descriptions = compiler->ReleaseFrameDescriptions();
+  result.signature_hash = lowered_call_desc->signature_hash();
   if (auto* debug_sidetable = compiler_options.debug_sidetable) {
     *debug_sidetable = debug_sidetable_builder->GenerateDebugSideTable();
   }

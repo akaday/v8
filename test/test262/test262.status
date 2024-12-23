@@ -205,9 +205,6 @@
   # https://bugs.chromium.org/p/v8/issues/detail?id=5690
   'language/expressions/call/eval-spread': [FAIL],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=7472
-  'intl402/NumberFormat/currency-digits': [FAIL],
-
   # https://bugs.chromium.org/p/v8/issues/detail?id=12209
   'intl402/Intl/supportedValuesOf/collations-accepted-by-Collator': [FAIL],
 
@@ -283,8 +280,6 @@
   'built-ins/Temporal/Duration/prototype/total/relativeto-zoneddatetime-with-fractional-days': [FAIL],
 
 
-  'staging/Temporal/Duration/old/round': [FAIL],
-  'staging/Temporal/Duration/old/total': [FAIL],
   'staging/Intl402/Temporal/old/dst-math': [FAIL],
 
   # UBSan complain about static_cast<int32_t> from double in AddISODate()
@@ -768,10 +763,7 @@
   'staging/Temporal/Regex/old/plaindatetime': [FAIL],
   'staging/Temporal/Regex/old/plainmonthday': [FAIL],
   'staging/Temporal/Regex/old/plainyearmonth': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/construction-and-properties': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/toPlainDate': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/toString': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/withTimezone': [FAIL],
+  'built-ins/Temporal/ZonedDateTime/construction-and-properties': [FAIL],
 
   'built-ins/Temporal/Duration/compare/relativeto-propertybag-invalid-offset-string': [FAIL],
   'built-ins/Temporal/Duration/compare/relativeto-propertybag-timezone-wrong-type': [FAIL],
@@ -934,8 +926,6 @@
   'built-ins/Temporal/ZonedDateTime/prototype/withPlainTime/argument-number': [FAIL],
   'built-ins/Temporal/ZonedDateTime/prototype/withPlainTime/argument-wrong-type': [FAIL],
   'built-ins/Temporal/ZonedDateTime/timezone-wrong-type': [FAIL],
-  'staging/Temporal/Instant/old/toZonedDateTimeISO': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/property-bags': [FAIL],
 
   'built-ins/Temporal/Duration/compare/relativeto-propertybag-timezone-string-datetime': [FAIL],
   'built-ins/Temporal/Duration/prototype/round/relativeto-propertybag-timezone-string-datetime': [FAIL],
@@ -1082,27 +1072,6 @@
   'intl402/DateTimeFormat/timezone-not-canonicalized': [FAIL],
 
   # https://issues.chromium.org/u/0/issues/42204365
-  'language/expressions/dynamic-import/syntax/invalid/nested-arrow-assignment-expression-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-arrow-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-async-arrow-function-await-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-async-arrow-function-return-await-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-async-function-await-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-async-function-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-async-function-return-await-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-async-gen-await-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-block-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-block-labeled-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-do-while-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-else-braceless-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-else-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-function-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-function-return-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-if-braceless-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-if-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-while-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-with-expression-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/nested-with-import-source-no-new-call-expression': [FAIL],
-  'language/expressions/dynamic-import/syntax/invalid/top-level-import-source-no-new-call-expression': [FAIL],
   'language/module-code/source-phase-import/import-source-binding-name': [FAIL],
   'language/module-code/source-phase-import/import-source-binding-name-2': [FAIL],
   'language/module-code/source-phase-import/import-source-newlines': [FAIL],
@@ -1466,7 +1435,7 @@
 
   # Temporal staging test which use timeZone other than "UTC" or
   # calendar other than "iso8601" which are not supported in no i18n mode.
-  'staging/Temporal/ZonedDateTime/old/construction-and-properties': [FAIL],
+  'built-ins/Temporal/ZonedDateTime/construction-and-properties': [FAIL],
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=11544
 }],  # not i18n
@@ -1699,7 +1668,6 @@
   'built-ins/TypedArray/prototype/with/index-validated-against-current-length': [FAIL],
   'intl402/Temporal/PlainMonthDay/prototype/toLocaleString/dateStyle': [SKIP],
   'intl402/Temporal/PlainYearMonth/prototype/toLocaleString/dateStyle': [SKIP],
-  'staging/Temporal/ZonedDateTime/old/round': [SKIP],
 }],
 # End roll-watcher patch
 ####
@@ -1741,8 +1709,6 @@
 # Roll-watcher patch
 [ALWAYS, {
   # https://github.com/tc39/test262/pull/4146
-  'built-ins/AbstractModuleSource/prototype': [SKIP],
-  'built-ins/AbstractModuleSource/prototype/Symbol.toStringTag': [SKIP],
   'built-ins/Math/sumPrecise/length': [SKIP],
   'built-ins/Math/sumPrecise/name': [SKIP],
   'built-ins/Math/sumPrecise/not-a-constructor': [SKIP],
@@ -1951,9 +1917,7 @@
   'staging/Intl402/Temporal/old/duration-total': [SKIP],
   'staging/Intl402/Temporal/old/zdt-round': [SKIP],
   'staging/Temporal/removed-methods': [SKIP],
-  'staging/Temporal/ZonedDateTime/old/construction-and-properties': [SKIP],
-  'staging/Temporal/ZonedDateTime/old/toPlainDate': [SKIP],
-  'staging/Temporal/ZonedDateTime/old/toString': [SKIP],
+  'built-ins/Temporal/ZonedDateTime/construction-and-properties': [SKIP],
 }],
 # End roll-watcher patch
 ####
@@ -2406,22 +2370,103 @@
 ####
 
 ####
+# import test262@ab69bd4dd8184ce6b96a0a02c904d20ee76b10ed
+[ALWAYS, {
+'built-ins/Temporal/Duration/prototype/round/accepts-datetime-strings-for-relative-to': [SKIP],
+'built-ins/Temporal/Duration/prototype/round/does-not-accept-non-string-primitives-for-relative-to': [SKIP],
+'built-ins/Temporal/Duration/prototype/round/rounding-increments': [SKIP],
+'built-ins/Temporal/Duration/prototype/round/rounding-relative-to-date': [SKIP],
+'built-ins/Temporal/Duration/prototype/total/does-not-accept-non-string-primitives-for-relativeTo': [SKIP],
+'built-ins/Temporal/Duration/prototype/total/no-precision-loss-for-small-units': [SKIP],
+'built-ins/Temporal/Instant/prototype/toZonedDateTimeISO/timezone-missing': [SKIP],
+'built-ins/Temporal/Instant/prototype/toZonedDateTimeISO/to-zoned-date-time-iso': [SKIP],
+'built-ins/Temporal/PlainYearMonth/prototype/add/subtract-from-last-representable-month': [SKIP],
+'built-ins/Temporal/PlainYearMonth/prototype/subtract/subtract-from-last-representable-month': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/argument-propertybag-function-object': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/argument-propertybag-ignores-incorrect-properties': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/argument-propertybag-monthcode-month': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/argument-string-basic-and-extended-format': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/argument-string-decimal-places': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/argument-string-negative-extended-year': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/argument-string-optional-parts': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/argument-string-variant-decimal-separator': [SKIP],
+'built-ins/Temporal/ZonedDateTime/from/overflow-options': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/add/add-duration': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/add/casts-argument': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/add/constrain-when-ambiguous-result': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/add/cross-epoch': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/add/math-order-of-operations-add-constrain': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/add/math-order-of-operations-add-none': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/add/overflow': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/add/symmetrical-wrt-negative-durations-in-time-part': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/round/rounding-increments': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/round/smallestunit': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/subtract/casts-argument': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/subtract/constrain-when-ambiguous-result': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/subtract/math-order-of-operations-subtract-constrain': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/subtract/math-order-of-operations-subtract-none': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/subtract/overflow': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/subtract/subtract-duration-object': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/subtract/symmetrical-wrt-negative-durations': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/toPlainDate/basic': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/with/basic': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/with/incorrectly-spelled-properties-ignored': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/with/overflow-options': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/withPlainTime/basic': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/withPlainTime/incorrectly-spelled-properties-ignored': [SKIP],
+'built-ins/Temporal/ZonedDateTime/prototype/withTimeZone/preserves-instant': [SKIP],
+'intl402/NumberFormat/currency-digits-nonstandard-notation': [SKIP],
+'intl402/Temporal/PlainYearMonth/prototype/with/minimum-valid-year-month': [SKIP],
+'intl402/Temporal/ZonedDateTime/prototype/startOfDay/same-date-starts-twice': [SKIP],
+'staging/Temporal/Duration/old/accepts-datetime-strings-or-fields-for-relativeTo': [SKIP],
+'staging/Temporal/Duration/old/balances-up-to-next-unit-after-rounding': [SKIP],
+'staging/Temporal/Duration/old/relativeto-not-required-to-round-fixed-length-units-in-durations-without-variable-units': [SKIP],
+}],
+# end import test262@ab69bd4dd8184ce6b96a0a02c904d20ee76b10ed
+####
+
+####
 # Roll-watcher patch
 [ALWAYS, {
-  'built-ins/Error/isError/bigints': [SKIP],
-  'built-ins/Error/isError/error-subclass': [SKIP],
-  'built-ins/Error/isError/errors': [SKIP],
-  'built-ins/Error/isError/errors-other-realm': [SKIP],
-  'built-ins/Error/isError/fake-errors': [SKIP],
-  'built-ins/Error/isError/is-a-constructor': [SKIP],
-  'built-ins/Error/isError/name': [SKIP],
-  'built-ins/Error/isError/non-error-objects': [SKIP],
-  'built-ins/Error/isError/non-error-objects-other-realm': [SKIP],
-  'built-ins/Error/isError/primitives': [SKIP],
-  'built-ins/Error/isError/prop-desc': [SKIP],
-  'built-ins/Error/isError/symbols': [SKIP],
+  'intl402/Temporal/Duration/prototype/round/adjust-rounded-duration-days': [SKIP],
 }],
 # End roll-watcher patch
+####
+
+####
+# import test262@dad2774b2eab2119cc8390ae65db4a5016de2dfe
+[ALWAYS, {
+  'built-ins/Temporal/Duration/prototype/round/balances-up-to-weeks': [SKIP],
+  'language/import/import-defer/deferred-namespace-object/exotic-object-behavior': [SKIP],
+  'language/import/import-defer/deferred-namespace-object/identity': [SKIP],
+  'language/import/import-defer/errors/get-other-while-dep-evaluating-async/main': [SKIP],
+  'language/import/import-defer/errors/get-other-while-dep-evaluating/main': [SKIP],
+  'language/import/import-defer/errors/get-other-while-evaluating-async/main': [SKIP],
+  'language/import/import-defer/errors/get-other-while-evaluating/main': [SKIP],
+  'language/import/import-defer/errors/get-self-while-defer-evaluating/main': [SKIP],
+  'language/import/import-defer/errors/get-self-while-evaluating': [SKIP],
+  'language/import/import-defer/errors/get-self-while-evaluating-async/main': [SKIP],
+  'language/import/import-defer/errors/module-throws/defer-import-after-evaluation': [SKIP],
+  'language/import/import-defer/errors/module-throws/third-party-evaluation-after-defer-import': [SKIP],
+  'language/import/import-defer/errors/module-throws/trigger-evaluation': [SKIP],
+  'language/import/import-defer/evaluation-sync/evaluation-ignore-getPrototypeOf': [SKIP],
+  'language/import/import-defer/evaluation-sync/evaluation-ignore-get-symbol': [SKIP],
+  'language/import/import-defer/evaluation-sync/evaluation-ignore-isExtensible': [SKIP],
+  'language/import/import-defer/evaluation-sync/evaluation-ignore-preventExtensions': [SKIP],
+  'language/import/import-defer/evaluation-sync/evaluation-ignore-set': [SKIP],
+  'language/import/import-defer/evaluation-sync/evaluation-ignore-setPrototypeOf': [SKIP],
+  'language/import/import-defer/evaluation-sync/evaluation-trigger-get-string': [SKIP],
+  'language/import/import-defer/evaluation-sync/import-defer-does-not-evaluate': [SKIP],
+  'language/import/import-defer/evaluation-sync/module-imported-defer-and-eager': [SKIP],
+  'language/import/import-defer/evaluation-top-level-await/flattening-order/main': [SKIP],
+  'language/import/import-defer/evaluation-top-level-await/import-defer-async-module/main': [SKIP],
+  'language/import/import-defer/evaluation-top-level-await/import-defer-transitive-async-module/main': [SKIP],
+  'language/import/import-defer/evaluation-top-level-await/sync-dependency-of-deferred-async-module/main': [SKIP],
+  'language/import/import-defer/syntax/import-attributes': [SKIP],
+  'language/import/import-defer/syntax/valid-default-binding-named-defer': [SKIP],
+  'language/import/import-defer/syntax/valid-defer-namespace': [SKIP],
+}],
+# end import test262@dad2774b2eab2119cc8390ae65db4a5016de2dfe
 ####
 
 ]

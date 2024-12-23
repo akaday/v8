@@ -113,7 +113,7 @@ class JSArrayBuffer
   // non-detachable check.
   V8_EXPORT_PRIVATE V8_WARN_UNUSED_RESULT static Maybe<bool> Detach(
       DirectHandle<JSArrayBuffer> buffer, bool force_for_wasm_memory = false,
-      Handle<Object> key = Handle<Object>());
+      DirectHandle<Object> key = {});
 
   // Get a reference to backing store of this array buffer, if there is a
   // backing store. Returns nullptr if there is no backing store (e.g. detached
@@ -331,15 +331,12 @@ class JSTypedArray
   static constexpr size_t kMaxByteLength = JSArrayBuffer::kMaxByteLength;
   static_assert(kMaxByteLength == v8::TypedArray::kMaxByteLength);
 
-  // [length]: length of typed array in elements.
-  DECL_PRIMITIVE_GETTER(length, size_t)
-
   DECL_GETTER(base_pointer, Tagged<Object>)
   DECL_ACQUIRE_GETTER(base_pointer, Tagged<Object>)
 
   // ES6 9.4.5.3
   V8_WARN_UNUSED_RESULT static Maybe<bool> DefineOwnProperty(
-      Isolate* isolate, Handle<JSTypedArray> o, Handle<Object> key,
+      Isolate* isolate, DirectHandle<JSTypedArray> o, DirectHandle<Object> key,
       PropertyDescriptor* desc, Maybe<ShouldThrow> should_throw);
 
   ExternalArrayType type();
@@ -361,6 +358,7 @@ class JSTypedArray
   inline bool is_on_heap(AcquireLoadTag tag) const;
 
   // Only valid to call when IsVariableLength() is true.
+  size_t GetVariableByteLengthOrOutOfBounds(bool& out_of_bounds) const;
   size_t GetVariableLengthOrOutOfBounds(bool& out_of_bounds) const;
 
   inline size_t GetLengthOrOutOfBounds(bool& out_of_bounds) const;
@@ -437,11 +435,6 @@ class JSTypedArray
   template <typename IsolateT>
   friend class Deserializer;
   friend class Factory;
-
-  DECL_PRIMITIVE_SETTER(length, size_t)
-  // Reads the "length" field, doesn't assert the TypedArray is not RAB / GSAB
-  // backed.
-  inline size_t LengthUnchecked() const;
 
   DECL_GETTER(external_pointer, Address)
 

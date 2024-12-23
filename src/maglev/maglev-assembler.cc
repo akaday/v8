@@ -657,6 +657,8 @@ void MaglevAssembler::GenerateCheckConstTrackingLetCellFooter(Register context,
                                                               Register data,
                                                               int index,
                                                               Label* done) {
+  Label smi_data, deopt;
+
   // Load the const tracking let side data.
   LoadTaggedField(
       data, context,
@@ -666,12 +668,21 @@ void MaglevAssembler::GenerateCheckConstTrackingLetCellFooter(Register context,
                   FixedArray::OffsetOfElementAt(
                       index - Context::MIN_CONTEXT_EXTENDED_SLOTS));
 
-  // If the field is already marked as "not a constant", storing a
-  // different value is fine. But if it's anything else (including the hole,
-  // which means no value was stored yet), deopt this code. The lower tier code
-  // will update the side data and invalidate DependentCode if needed.
-  CompareTaggedAndJumpIf(data, ContextSidePropertyCell::Other(), kEqual, done,
-                         Label::kNear);
+  // Load property.
+  JumpIfSmi(data, &smi_data, Label::kNear);
+  JumpIfRoot(data, RootIndex::kUndefinedValue, &deopt);
+  if (v8_flags.debug_code) {
+    AssertObjectType(data, CONTEXT_SIDE_PROPERTY_CELL_TYPE,
+                     AbortReason::kUnexpectedValue);
+  }
+  LoadTaggedField(data, data,
+                  ContextSidePropertyCell::kPropertyDetailsRawOffset);
+
+  // It must be different than kConst.
+  bind(&smi_data);
+  CompareTaggedAndJumpIf(data, ContextSidePropertyCell::Const(), kNotEqual,
+                         done, Label::kNear);
+  bind(&deopt);
 }
 
 void MaglevAssembler::TryMigrateInstance(Register object,
@@ -700,6 +711,15 @@ void MaglevAssembler::TryMigrateInstance(Register object,
 
   // On failure, the returned value is Smi zero.
   CompareTaggedAndJumpIf(return_val, Smi::zero(), kEqual, fail);
+}
+
+void MaglevAssembler::TryMigrateInstanceAndMarkMapAsMigrationTarget(
+    Register object, RegisterSnapshot& register_snapshot) {
+  SaveRegisterStateForCall save_register_state(this, register_snapshot);
+  Push(object);
+  Move(kContextRegister, native_context().object());
+  CallRuntime(Runtime::kTryMigrateInstanceAndMarkMapAsMigrationTarget);
+  save_register_state.DefineSafepoint();
 }
 
 }  // namespace maglev
